@@ -11,6 +11,9 @@ from typing import Optional
 from amplifier_core import ModuleCoordinator
 from amplifier_core import ProviderResponse
 from amplifier_core import ToolCall
+from amplifier_core.content_models import TextContent
+from amplifier_core.content_models import ThinkingContent
+from amplifier_core.content_models import ToolCallContent
 from anthropic import AsyncAnthropic
 
 logger = logging.getLogger(__name__)
@@ -101,6 +104,10 @@ class AnthropicProvider:
         if system:
             params["system"] = system
 
+        # Support extended thinking
+        if kwargs.get("extended_thinking"):
+            params["extended_thinking"] = kwargs["extended_thinking"]
+
         # Add tools if provided
         if "tools" in kwargs:
             params["tools"] = self._convert_tools(kwargs["tools"])
@@ -111,18 +118,26 @@ class AnthropicProvider:
             # Convert response to standard format
             content = ""
             tool_calls = []
+            content_blocks = []
 
             for block in response.content:
                 if block.type == "text":
                     content = block.text
+                    content_blocks.append(TextContent(text=block.text, raw=block))
+                elif block.type == "thinking":
+                    content_blocks.append(ThinkingContent(text=block.text, raw=block))
                 elif block.type == "tool_use":
                     tool_calls.append(ToolCall(tool=block.name, arguments=block.input, id=block.id))
+                    content_blocks.append(
+                        ToolCallContent(id=block.id, name=block.name, arguments=block.input, raw=block)
+                    )
 
             return ProviderResponse(
                 content=content,
                 raw=response,
                 usage={"input": response.usage.input_tokens, "output": response.usage.output_tokens},
                 tool_calls=tool_calls if tool_calls else None,
+                content_blocks=content_blocks if content_blocks else None,
             )
 
         except Exception as e:
