@@ -71,6 +71,7 @@ class AnthropicProvider:
         self.default_model = self.config.get("default_model", "claude-3-5-sonnet-20241022")
         self.max_tokens = self.config.get("max_tokens", 4096)
         self.temperature = self.config.get("temperature", 0.7)
+        self.priority = self.config.get("priority", 100)  # Store priority for selection
 
     async def complete(self, messages: list[dict[str, Any]], **kwargs) -> ProviderResponse:
         """
@@ -104,16 +105,29 @@ class AnthropicProvider:
         if system:
             params["system"] = system
 
-        # Support extended thinking
+        # Support extended thinking (Anthropic API format)
         if kwargs.get("extended_thinking"):
-            params["extended_thinking"] = kwargs["extended_thinking"]
+            # Anthropic expects thinking={type: "enabled", budget_tokens: N}
+            budget_tokens = kwargs.get("thinking_budget_tokens", 10000)
+            params["thinking"] = {"type": "enabled", "budget_tokens": budget_tokens}
+            # When thinking is enabled, temperature must be 1
+            params["temperature"] = 1.0
+            # max_tokens must be greater than budget_tokens (add buffer for actual response)
+            if params["max_tokens"] <= budget_tokens:
+                params["max_tokens"] = budget_tokens + 4096  # Budget + response tokens
+            logger.info(
+                f"Extended thinking enabled with budget: {budget_tokens} tokens (temperature=1.0, max_tokens={params['max_tokens']})"
+            )
 
         # Add tools if provided
         if "tools" in kwargs:
             params["tools"] = self._convert_tools(kwargs["tools"])
 
+        logger.info(f"Anthropic API call - model: {params['model']}, thinking: {params.get('thinking')}")
+
         try:
             response = await self.client.messages.create(**params)
+            logger.info(f"Anthropic API response received - content blocks: {len(response.content)}")
 
             # Convert response to standard format
             content = ""
@@ -121,11 +135,13 @@ class AnthropicProvider:
             content_blocks = []
 
             for block in response.content:
+                logger.info(f"Processing block type: {block.type}")
                 if block.type == "text":
                     content = block.text
                     content_blocks.append(TextContent(text=block.text, raw=block))
                 elif block.type == "thinking":
-                    content_blocks.append(ThinkingContent(text=block.text, raw=block))
+                    logger.info(f"Found thinking block with {len(block.thinking)} chars")
+                    content_blocks.append(ThinkingContent(text=block.thinking, raw=block))
                 elif block.type == "tool_use":
                     tool_calls.append(ToolCall(tool=block.name, arguments=block.input, id=block.id))
                     content_blocks.append(
@@ -189,10 +205,15 @@ class AnthropicProvider:
                     }
                 )
             elif role == "assistant":
-                # Assistant messages - check for tool calls
+                # Assistant messages - check for tool calls or thinking blocks
                 if "tool_calls" in msg and msg["tool_calls"]:
                     # Assistant message with tool calls
                     content_blocks = []
+
+                    # CRITICAL: Check for thinking block and add it FIRST
+                    if "thinking_block" in msg and msg["thinking_block"]:
+                        # Use the raw thinking block which includes signature
+                        content_blocks.append(msg["thinking_block"])
 
                     # Add text content if present
                     if content:
@@ -209,6 +230,12 @@ class AnthropicProvider:
                             }
                         )
 
+                    anthropic_messages.append({"role": "assistant", "content": content_blocks})
+                elif "thinking_block" in msg and msg["thinking_block"]:
+                    # Assistant message with thinking block
+                    content_blocks = [msg["thinking_block"]]
+                    if content:
+                        content_blocks.append({"type": "text", "text": content})
                     anthropic_messages.append({"role": "assistant", "content": content_blocks})
                 else:
                     # Regular assistant message
