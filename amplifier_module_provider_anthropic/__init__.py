@@ -5,6 +5,7 @@ Integrates with Anthropic's Claude API.
 
 import logging
 import os
+import time
 from typing import Any
 from typing import Optional
 
@@ -41,7 +42,7 @@ async def mount(coordinator: ModuleCoordinator, config: dict[str, Any] | None = 
         logger.warning("No API key found for Anthropic provider")
         return None
 
-    provider = AnthropicProvider(api_key, config)
+    provider = AnthropicProvider(api_key, config, coordinator)
     await coordinator.mount("providers", provider, name="anthropic")
     logger.info("Mounted AnthropicProvider")
 
@@ -58,16 +59,20 @@ class AnthropicProvider:
 
     name = "anthropic"
 
-    def __init__(self, api_key: str, config: dict[str, Any] | None = None):
+    def __init__(
+        self, api_key: str, config: dict[str, Any] | None = None, coordinator: ModuleCoordinator | None = None
+    ):
         """
         Initialize Anthropic provider.
 
         Args:
             api_key: Anthropic API key
             config: Additional configuration
+            coordinator: Module coordinator for event emission
         """
         self.client = AsyncAnthropic(api_key=api_key)
         self.config = config or {}
+        self.coordinator = coordinator
         self.default_model = self.config.get("default_model", "claude-3-5-sonnet-20241022")
         self.max_tokens = self.config.get("max_tokens", 4096)
         self.temperature = self.config.get("temperature", 0.7)
@@ -125,14 +130,29 @@ class AnthropicProvider:
 
         logger.info(f"Anthropic API call - model: {params['model']}, thinking: {params.get('thinking')}")
 
+        # Emit llm:request event if coordinator is available
+        if self.coordinator and hasattr(self.coordinator, "hooks"):
+            await self.coordinator.hooks.emit(
+                "llm:request",
+                {
+                    "provider": "anthropic",
+                    "model": params["model"],
+                    "messages": len(anthropic_messages),  # Count only, not content (privacy)
+                    "thinking_enabled": params.get("thinking") is not None,
+                },
+            )
+
+        start_time = time.time()
         try:
             response = await self.client.messages.create(**params)
+            elapsed_ms = int((time.time() - start_time) * 1000)
             logger.info(f"Anthropic API response received - content blocks: {len(response.content)}")
 
             # Convert response to standard format
             content = ""
             tool_calls = []
             content_blocks = []
+            thinking_text = ""
 
             for block in response.content:
                 logger.info(f"Processing block type: {block.type}")
@@ -141,12 +161,31 @@ class AnthropicProvider:
                     content_blocks.append(TextContent(text=block.text, raw=block))
                 elif block.type == "thinking":
                     logger.info(f"Found thinking block with {len(block.thinking)} chars")
+                    thinking_text = block.thinking
                     content_blocks.append(ThinkingContent(text=block.thinking, raw=block))
+
+                    # Emit thinking:final event for the complete thinking block
+                    if self.coordinator and hasattr(self.coordinator, "hooks"):
+                        await self.coordinator.hooks.emit("thinking:final", {"text": block.thinking})
                 elif block.type == "tool_use":
                     tool_calls.append(ToolCall(tool=block.name, arguments=block.input, id=block.id))
                     content_blocks.append(
                         ToolCallContent(id=block.id, name=block.name, arguments=block.input, raw=block)
                     )
+
+            # Emit llm:response event with success
+            if self.coordinator and hasattr(self.coordinator, "hooks"):
+                await self.coordinator.hooks.emit(
+                    "llm:response",
+                    {
+                        "provider": "anthropic",
+                        "model": params["model"],
+                        "status": "ok",
+                        "duration_ms": elapsed_ms,
+                        "usage": {"input": response.usage.input_tokens, "output": response.usage.output_tokens},
+                        "has_thinking": bool(thinking_text),
+                    },
+                )
 
             return ProviderResponse(
                 content=content,
@@ -158,6 +197,20 @@ class AnthropicProvider:
 
         except Exception as e:
             logger.error(f"Anthropic API error: {e}")
+
+            # Emit llm:response event with error
+            if self.coordinator and hasattr(self.coordinator, "hooks"):
+                await self.coordinator.hooks.emit(
+                    "llm:response",
+                    {
+                        "provider": "anthropic",
+                        "model": params.get("model", self.default_model),
+                        "status": "error",
+                        "duration_ms": int((time.time() - start_time) * 1000),
+                        "error": str(e),
+                    },
+                )
+
             raise
 
     def parse_tool_calls(self, response: ProviderResponse) -> list[ToolCall]:
