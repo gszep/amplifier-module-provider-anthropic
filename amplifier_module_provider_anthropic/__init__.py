@@ -217,13 +217,32 @@ class AnthropicProvider:
         """
         Parse tool calls from provider response.
 
+        Filters out tool calls with empty/missing arguments to handle
+        Anthropic API quirk where empty tool_use blocks are sometimes generated.
+
         Args:
             response: Provider response
 
         Returns:
-            List of tool calls
+            List of valid tool calls (with non-empty arguments)
         """
-        return response.tool_calls or []
+        if not response.tool_calls:
+            return []
+
+        # Filter out tool calls with empty arguments (Anthropic API quirk)
+        # Claude sometimes generates tool_use blocks with empty input {}
+        valid_calls = []
+        for tc in response.tool_calls:
+            # Skip tool calls with no arguments or empty dict
+            if not tc.arguments:
+                logger.debug(f"Filtering out tool '{tc.tool}' with empty arguments")
+                continue
+            valid_calls.append(tc)
+
+        if len(valid_calls) < len(response.tool_calls):
+            logger.info(f"Filtered {len(response.tool_calls) - len(valid_calls)} tool calls with empty arguments")
+
+        return valid_calls
 
     def _convert_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Convert messages to Anthropic format."""
