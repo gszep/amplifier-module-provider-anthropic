@@ -283,17 +283,15 @@ class AnthropicProvider:
         Returns:
             ChatResponse with content blocks
         """
-        print(f"\n{'=' * 80}\n_complete_chat_request() CALLED | debug={self.debug}\n{'=' * 80}")
-        logger.info(f"[PROVIDER] Received ChatRequest with {len(request.messages)} messages")
-        logger.info(f"[PROVIDER] Message roles: {[m.role for m in request.messages]}")
+        logger.debug(f"Received ChatRequest with {len(request.messages)} messages (debug={self.debug})")
 
         # Separate messages by role
         system_msgs = [m for m in request.messages if m.role == "system"]
         developer_msgs = [m for m in request.messages if m.role == "developer"]
         conversation = [m for m in request.messages if m.role in ("user", "assistant")]
 
-        logger.info(
-            f"[PROVIDER] Separated: {len(system_msgs)} system, {len(developer_msgs)} developer, {len(conversation)} conversation"
+        logger.debug(
+            f"Separated: {len(system_msgs)} system, {len(developer_msgs)} developer, {len(conversation)} conversation"
         )
 
         # Combine system messages
