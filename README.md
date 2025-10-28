@@ -67,6 +67,17 @@ default_model = "claude-sonnet-4-5"
 - Tool use (function calling)
 - Vision capabilities (on supported models)
 - Token counting and management
+- **Message validation** before API calls (defense in depth)
+
+## Message Validation
+
+Before sending messages to Anthropic API, the provider validates tool_use/tool_result consistency:
+
+- Every tool_use block has a matching tool_result block
+- Tool pairs are adjacent (tool_result immediately follows tool_use)
+- No orphaned tool_results from failed operations
+
+This defense-in-depth validation catches conversation state corruption before it reaches the API, providing clear error messages instead of cryptic 400 errors from Anthropic
 
 ## Dependencies
 

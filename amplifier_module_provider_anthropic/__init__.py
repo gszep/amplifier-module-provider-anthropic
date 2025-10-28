@@ -102,6 +102,30 @@ class AnthropicProvider:
         # Convert messages to Anthropic format
         anthropic_messages = self._convert_messages(messages)
 
+        # VALIDATE: Tool consistency before API call (fail fast)
+        try:
+            self._validate_anthropic_tool_consistency(anthropic_messages)
+        except ValueError as e:
+            logger.error(f"Message validation failed before Anthropic API call: {e}")
+
+            # Emit validation error event for observability
+            if self.coordinator and hasattr(self.coordinator, "hooks"):
+                await self.coordinator.hooks.emit(
+                    "provider:validation_error",
+                    {
+                        "provider": "anthropic",
+                        "validation": "tool_use_tool_result_consistency",
+                        "error": str(e),
+                        "message_count": len(anthropic_messages),
+                    },
+                )
+
+            # Fail fast with actionable error
+            raise RuntimeError(
+                f"Cannot send messages to Anthropic API: {e}\n\n"
+                f"This is likely a bug in context compaction. Please report this issue."
+            ) from e
+
         # Extract system message if present
         system = None
         for msg in messages:
@@ -473,6 +497,78 @@ class AnthropicProvider:
             logger.info(f"Filtered {len(response.tool_calls) - len(valid_calls)} tool calls with empty arguments")
 
         return valid_calls
+
+    def _validate_anthropic_tool_consistency(self, messages: list[dict[str, Any]]) -> None:
+        """Validate tool_use/tool_result pairing per Anthropic API requirements.
+
+        Anthropic requires: Each tool_use in message N must have matching tool_result
+        in message N+1. This validation catches state corruption bugs before they hit
+        the API (defense in depth).
+
+        Args:
+            messages: Anthropic-formatted messages to validate
+
+        Raises:
+            ValueError: If tool_use/tool_result pairs are inconsistent
+        """
+        i = 0
+        while i < len(messages):
+            msg = messages[i]
+
+            # Anthropic format: assistant messages may have content blocks with tool_use
+            if msg.get("role") == "assistant":
+                content = msg.get("content", [])
+
+                # Check if content is a list with tool_use blocks
+                if isinstance(content, list):
+                    tool_use_ids = {
+                        block.get("id") for block in content if isinstance(block, dict) and block.get("type") == "tool_use"
+                    }
+
+                    if tool_use_ids:
+                        # Next message MUST be user with tool_result blocks
+                        if i + 1 >= len(messages):
+                            raise ValueError(
+                                f"Anthropic API invariant violated: Message {i} has tool_use blocks "
+                                f"but no following message. Tool IDs: {tool_use_ids}. "
+                                f"Each tool_use MUST have matching tool_result in next message."
+                            )
+
+                        next_msg = messages[i + 1]
+                        if next_msg.get("role") != "user":
+                            raise ValueError(
+                                f"Anthropic API invariant violated: Message {i} has tool_use blocks "
+                                f"but next message is role='{next_msg.get('role')}' (expected 'user' with tool_results)."
+                            )
+
+                        # Extract tool_result IDs from next message
+                        next_content = next_msg.get("content", [])
+                        if isinstance(next_content, list):
+                            result_ids = {
+                                block.get("tool_use_id")
+                                for block in next_content
+                                if isinstance(block, dict) and block.get("type") == "tool_result"
+                            }
+
+                            # Validate all tool_use IDs have matching tool_results
+                            missing = tool_use_ids - result_ids
+                            if missing:
+                                raise ValueError(
+                                    f"Anthropic API invariant violated: Message {i} has tool_use IDs "
+                                    f"without matching tool_result blocks: {missing}. "
+                                    f"This indicates a compaction bug or state corruption."
+                                )
+
+                            # Warn about orphaned tool_results (possible retry bug)
+                            extra = result_ids - tool_use_ids
+                            if extra:
+                                raise ValueError(
+                                    f"Anthropic API invariant violated: Message {i+1} has tool_result blocks "
+                                    f"without matching tool_use: {extra}. "
+                                    f"This indicates stale results from a failed retry."
+                                )
+
+            i += 1
 
     def _convert_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Convert messages to Anthropic format."""
