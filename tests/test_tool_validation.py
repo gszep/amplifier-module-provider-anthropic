@@ -6,7 +6,6 @@ sending to the API, providing clear error messages.
 """
 
 import pytest
-
 from amplifier_module_provider_anthropic import AnthropicProvider
 
 
@@ -82,9 +81,7 @@ def test_validation_catches_orphaned_tool_result():
     messages = [
         {
             "role": "assistant",
-            "content": [
-                {"type": "tool_use", "id": "toolu_correct", "name": "bash", "input": {}}
-            ],
+            "content": [{"type": "tool_use", "id": "toolu_correct", "name": "bash", "input": {}}],
         },
         {
             "role": "user",

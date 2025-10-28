@@ -522,7 +522,9 @@ class AnthropicProvider:
                 # Check if content is a list with tool_use blocks
                 if isinstance(content, list):
                     tool_use_ids = {
-                        block.get("id") for block in content if isinstance(block, dict) and block.get("type") == "tool_use"
+                        block.get("id")
+                        for block in content
+                        if isinstance(block, dict) and block.get("type") == "tool_use"
                     }
 
                     if tool_use_ids:
@@ -563,7 +565,7 @@ class AnthropicProvider:
                             extra = result_ids - tool_use_ids
                             if extra:
                                 raise ValueError(
-                                    f"Anthropic API invariant violated: Message {i+1} has tool_result blocks "
+                                    f"Anthropic API invariant violated: Message {i + 1} has tool_result blocks "
                                     f"without matching tool_use: {extra}. "
                                     f"This indicates stale results from a failed retry."
                                 )
