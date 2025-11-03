@@ -1,7 +1,10 @@
+"""Anthropic provider module for Amplifier.
+
+Integrates with Anthropic's Claude API for Claude models (Sonnet, Opus, Haiku).
+Supports streaming, tool calling, extended thinking, and ChatRequest format.
 """
-Anthropic provider module for Amplifier.
-Integrates with Anthropic's Claude API.
-"""
+
+__all__ = ["mount", "AnthropicProvider"]
 
 import asyncio
 import logging
