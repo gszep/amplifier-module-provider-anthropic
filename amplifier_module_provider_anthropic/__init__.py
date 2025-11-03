@@ -62,7 +62,14 @@ async def mount(coordinator: ModuleCoordinator, config: dict[str, Any] | None = 
 
 
 class AnthropicProvider:
-    """Anthropic API integration."""
+    """Anthropic API integration.
+
+    Provides Claude models with support for:
+    - Text generation
+    - Tool calling
+    - Extended thinking
+    - Streaming responses
+    """
 
     name = "anthropic"
 
