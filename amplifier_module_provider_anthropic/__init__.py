@@ -113,6 +113,19 @@ class AnthropicProvider:
         # Convert messages to Anthropic format
         anthropic_messages = self._convert_messages(messages)
 
+        # REPAIR: Fix incomplete tool sequences before validation
+        anthropic_messages, repair_count, repairs_made = self._repair_incomplete_tool_sequences(anthropic_messages)
+        if repair_count and self.coordinator and hasattr(self.coordinator, "hooks"):
+            # Emit observability event for repair
+            await self.coordinator.hooks.emit(
+                "provider:tool_sequence_repaired",
+                {
+                    "provider": self.name,
+                    "repair_count": repair_count,
+                    "repairs": repairs_made,
+                },
+            )
+
         # VALIDATE: Tool consistency before API call (fail fast)
         try:
             self._validate_anthropic_tool_consistency(anthropic_messages)
@@ -518,6 +531,134 @@ class AnthropicProvider:
             logger.info(f"Filtered {len(response.tool_calls) - len(valid_calls)} tool calls with empty arguments")
 
         return valid_calls
+
+    def _repair_incomplete_tool_sequences(
+        self, messages: list[dict[str, Any]]
+    ) -> tuple[list[dict[str, Any]], int, list[dict]]:
+        """Repair incomplete tool_use/tool_result sequences in Anthropic format.
+
+        When assistant messages have tool_use blocks without matching tool_results, inject
+        synthetic results that make the failure visible to the LLM while allowing the
+        conversation to continue (graceful degradation).
+
+        Anthropic format: assistant content blocks contain tool_use, next user message
+        contains tool_result blocks.
+
+        Returns:
+            (repaired_messages, count_of_repairs_made, list_of_repairs)
+        """
+        if not messages:
+            return messages, 0, []
+
+        repaired = list(messages)
+        repair_count = 0
+        repairs_made = []
+        i = 0
+
+        while i < len(repaired):
+            msg = repaired[i]
+
+            # Check assistant messages for tool_use blocks
+            if msg.get("role") == "assistant":
+                content = msg.get("content", [])
+
+                if isinstance(content, list):
+                    # Extract tool_use blocks
+                    tool_uses = [
+                        block for block in content if isinstance(block, dict) and block.get("type") == "tool_use"
+                    ]
+
+                    if tool_uses:
+                        # Get all tool_use IDs
+                        tool_use_ids = {tu.get("id") for tu in tool_uses if tu.get("id")}
+
+                        # Check if next message is user with tool_results
+                        has_user_msg = i + 1 < len(repaired) and repaired[i + 1].get("role") == "user"
+                        result_ids = set()
+
+                        if has_user_msg:
+                            next_content = repaired[i + 1].get("content", [])
+                            if isinstance(next_content, list):
+                                # Extract existing tool_result IDs from list content
+                                result_ids = {
+                                    block.get("tool_use_id")
+                                    for block in next_content
+                                    if isinstance(block, dict) and block.get("type") == "tool_result"
+                                }
+
+                        # Find missing tool_results
+                        missing_ids = tool_use_ids - result_ids
+
+                        if missing_ids:
+                            # Create synthetic results for all missing IDs
+                            synthetic_results = []
+                            for tool_use in tool_uses:
+                                if tool_use.get("id") in missing_ids:
+                                    synthetic_results.append(
+                                        {
+                                            "type": "tool_result",
+                                            "tool_use_id": tool_use.get("id"),
+                                            "content": (
+                                                f"[SYSTEM ERROR: Tool result missing from conversation history]\n\n"
+                                                f"Tool: {tool_use.get('name')}\n"
+                                                f"Input: {self._safe_stringify(tool_use.get('input'))}\n\n"
+                                                f"This likely indicates:\n"
+                                                f"- Context compaction dropped this result\n"
+                                                f"- Parsing error in message history\n"
+                                                f"- State corruption during session\n\n"
+                                                f"The tool may have executed successfully, but the result was lost.\n"
+                                                f"Please acknowledge this error and ask the user to retry if needed."
+                                            ),
+                                        }
+                                    )
+
+                                    repairs_made.append(
+                                        {
+                                            "tool_use_id": tool_use.get("id"),
+                                            "tool_name": tool_use.get("name"),
+                                            "message_index": i,
+                                        }
+                                    )
+
+                            # Decide where to inject based on next message structure
+                            if has_user_msg:
+                                next_content = repaired[i + 1].get("content", [])
+                                if isinstance(next_content, list):
+                                    # Append to existing list content
+                                    repaired[i + 1]["content"].extend(synthetic_results)
+                                else:
+                                    # Convert string content to list, prepend synthetic results
+                                    repaired[i + 1]["content"] = synthetic_results
+                            else:
+                                # Insert new user message with synthetic results
+                                repaired.insert(i + 1, {"role": "user", "content": synthetic_results})
+
+                            repair_count += len(synthetic_results)
+                            logger.warning(
+                                "Injected %d synthetic tool_result(s) for Anthropic API (missing IDs: %s)",
+                                len(missing_ids),
+                                sorted(str(id) for id in missing_ids),
+                            )
+
+            i += 1
+
+        return repaired, repair_count, repairs_made
+
+    def _safe_stringify(self, value: Any) -> str:
+        """Safely convert value to string for error messages."""
+        if value is None:
+            return "null"
+        if isinstance(value, str):
+            return value[:500] + ("..." if len(value) > 500 else "")
+        if isinstance(value, dict):
+            try:
+                import json
+
+                json_str = json.dumps(value, ensure_ascii=False)
+                return json_str[:500] + ("..." if len(json_str) > 500 else "")
+            except Exception:
+                return str(value)[:500]
+        return str(value)[:500]
 
     def _validate_anthropic_tool_consistency(self, messages: list[dict[str, Any]]) -> None:
         """Validate tool_use/tool_result pairing per Anthropic API requirements.

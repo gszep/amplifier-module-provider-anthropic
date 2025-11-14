@@ -94,15 +94,50 @@ default_model = "claude-sonnet-4-5"
 - Token counting and management
 - **Message validation** before API calls (defense in depth)
 
-## Message Validation
+## Graceful Error Recovery
 
-Before sending messages to Anthropic API, the provider validates tool_use/tool_result consistency:
+The provider implements automatic repair for incomplete tool call sequences:
 
-- Every tool_use block has a matching tool_result block
-- Tool pairs are adjacent (tool_result immediately follows tool_use)
-- No orphaned tool_results from failed operations
+**The Problem**: If tool results are missing from conversation history (due to context compaction bugs, parsing errors, or state corruption), the Anthropic API rejects the entire request, breaking the user's session.
 
-This defense-in-depth validation catches conversation state corruption before it reaches the API, providing clear error messages instead of cryptic 400 errors from Anthropic
+**The Solution**: The provider automatically detects and repairs missing tool_results by injecting synthetic results:
+
+1. **Repair before validation** - Detects missing tool_results and injects synthetic ones
+2. **Make failures visible** - Synthetic results contain `[SYSTEM ERROR: Tool result missing]` messages
+3. **Maintain conversation validity** - API accepts repaired messages, session continues
+4. **Enable recovery** - LLM acknowledges error and can ask user to retry
+5. **Provide observability** - Emits `provider:tool_sequence_repaired` event with repair details
+6. **Validate remaining** - After repair, strict validation catches any remaining inconsistencies
+
+**Example**:
+```python
+# Anthropic format (after _convert_messages)
+messages = [
+    {
+        "role": "assistant",
+        "content": [
+            {"type": "tool_use", "id": "toolu_123", "name": "get_weather", "input": {...}}
+        ]
+    },
+    # MISSING: {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_123", ...}]}
+    {"role": "user", "content": "Thanks"}
+]
+
+# Provider repairs by injecting synthetic result:
+# Either appends to existing user message or inserts new one
+{
+    "role": "user",
+    "content": [{
+        "type": "tool_result",
+        "tool_use_id": "toolu_123",
+        "content": "[SYSTEM ERROR: Tool result missing]\n\nTool: get_weather\n..."
+    }]
+}
+```
+
+**Observability**: Repairs are logged as warnings and emit `provider:tool_sequence_repaired` events for monitoring.
+
+**Philosophy**: This is **graceful degradation** following kernel philosophy - errors in other modules (context management) don't crash the provider or kill the user's session
 
 ## Dependencies
 

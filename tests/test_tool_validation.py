@@ -1,12 +1,42 @@
 """
-Tests for Anthropic provider tool_use/tool_result validation.
+Tests for Anthropic provider tool_use/tool_result validation and repair.
 
-Verifies that the provider catches tool pair inconsistencies before
-sending to the API, providing clear error messages.
+Verifies that:
+1. Provider repairs incomplete tool sequences with synthetic results
+2. Validation catches remaining inconsistencies
 """
 
 import pytest
 from amplifier_module_provider_anthropic import AnthropicProvider
+
+
+def test_repair_creates_synthetic_user_message():
+    """Provider repairs missing tool_result by creating synthetic user message."""
+    provider = AnthropicProvider(api_key="test-key")
+
+    # Anthropic format after _convert_messages: tool_use with no following message
+    messages = [
+        {"role": "user", "content": "Run ls"},
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "tool_use", "id": "toolu_123", "name": "bash", "input": {"cmd": "ls"}},
+            ],
+        },
+        # Missing tool_result message!
+        {"role": "user", "content": "Thanks"},
+    ]
+
+    # Repair should replace user message content with synthetic results
+    repaired, count, repairs = provider._repair_incomplete_tool_sequences(messages)
+    assert count == 1
+    assert len(repaired) == 3  # Same 3 messages, but content replaced
+    assert repaired[2]["role"] == "user"
+    assert isinstance(repaired[2]["content"], list)
+    assert len(repaired[2]["content"]) == 1
+    assert repaired[2]["content"][0]["type"] == "tool_result"
+    assert repaired[2]["content"][0]["tool_use_id"] == "toolu_123"
+    assert "SYSTEM ERROR" in repaired[2]["content"][0]["content"]
 
 
 def test_validation_catches_orphaned_tool_use():
@@ -25,8 +55,12 @@ def test_validation_catches_orphaned_tool_use():
         # Missing tool_result message!
     ]
 
-    with pytest.raises(ValueError, match="tool_use blocks but no following message"):
-        provider._validate_anthropic_tool_consistency(messages)
+    # After repair, this should no longer raise
+    repaired, count, repairs = provider._repair_incomplete_tool_sequences(messages)
+    assert count == 1
+    assert len(repaired) == 2
+    assert repaired[1]["role"] == "user"
+    assert any("SYSTEM ERROR" in str(block.get("content", "")) for block in repaired[1]["content"])
 
 
 def test_validation_catches_wrong_next_role():
@@ -46,11 +80,11 @@ def test_validation_catches_wrong_next_role():
         provider._validate_anthropic_tool_consistency(messages)
 
 
-def test_validation_catches_missing_tool_result_id():
-    """Provider validation catches tool_use_id without matching tool_result."""
+def test_repair_injects_into_existing_user_message():
+    """Provider repairs missing tool_result by injecting into existing user message."""
     provider = AnthropicProvider(api_key="test-key")
 
-    # Simulate broken state: tool_use ID doesn't have matching tool_result
+    # Broken state: tool_use ID doesn't have matching tool_result
     messages = [
         {
             "role": "assistant",
@@ -68,8 +102,13 @@ def test_validation_catches_missing_tool_result_id():
         },
     ]
 
-    with pytest.raises(ValueError, match="without matching tool_result"):
-        provider._validate_anthropic_tool_consistency(messages)
+    # Repair should inject synthetic result
+    repaired, count, repairs = provider._repair_incomplete_tool_sequences(messages)
+    assert count == 1
+    assert len(repaired[1]["content"]) == 2
+    assert repaired[1]["content"][1]["type"] == "tool_result"
+    assert repaired[1]["content"][1]["tool_use_id"] == "toolu_missing"
+    assert "SYSTEM ERROR" in repaired[1]["content"][1]["content"]
 
 
 def test_validation_catches_orphaned_tool_result():
