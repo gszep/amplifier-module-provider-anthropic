@@ -14,14 +14,13 @@ from typing import Any
 from typing import Optional
 
 from amplifier_core import ModuleCoordinator
-from amplifier_core import ProviderResponse
-from amplifier_core import ToolCall
 from amplifier_core.content_models import TextContent
 from amplifier_core.content_models import ThinkingContent
 from amplifier_core.content_models import ToolCallContent
 from amplifier_core.message_models import ChatRequest
 from amplifier_core.message_models import ChatResponse
 from amplifier_core.message_models import Message
+from amplifier_core.message_models import ToolCall
 from anthropic import AsyncAnthropic
 
 logger = logging.getLogger(__name__)
@@ -95,246 +94,18 @@ class AnthropicProvider:
         self.raw_debug = self.config.get("raw_debug", False)  # Enable ultra-verbose raw API I/O logging
         self.timeout = self.config.get("timeout", 300.0)  # API timeout in seconds (default 5 minutes)
 
-    async def complete(self, messages: list[dict[str, Any]] | ChatRequest, **kwargs) -> ProviderResponse | ChatResponse:
+    async def complete(self, request: ChatRequest, **kwargs) -> ChatResponse:
         """
-        Generate completion from messages.
+        Generate completion from ChatRequest.
 
         Args:
-            messages: Conversation history (list of dicts or ChatRequest)
-            **kwargs: Additional parameters
+            request: Typed chat request with messages, tools, config
+            **kwargs: Provider-specific options (override request fields)
 
         Returns:
-            Provider response or ChatResponse
+            ChatResponse with content blocks, tool calls, usage
         """
-        # Handle ChatRequest format
-        if isinstance(messages, ChatRequest):
-            return await self._complete_chat_request(messages, **kwargs)
-
-        # Convert messages to Anthropic format
-        anthropic_messages = self._convert_messages(messages)
-
-        # REPAIR: Fix incomplete tool sequences before validation
-        anthropic_messages, repair_count, repairs_made = self._repair_incomplete_tool_sequences(anthropic_messages)
-        if repair_count and self.coordinator and hasattr(self.coordinator, "hooks"):
-            # Emit observability event for repair
-            await self.coordinator.hooks.emit(
-                "provider:tool_sequence_repaired",
-                {
-                    "provider": self.name,
-                    "repair_count": repair_count,
-                    "repairs": repairs_made,
-                },
-            )
-
-        # VALIDATE: Tool consistency before API call (fail fast)
-        try:
-            self._validate_anthropic_tool_consistency(anthropic_messages)
-        except ValueError as e:
-            logger.error(f"Message validation failed before Anthropic API call: {e}")
-
-            # Emit validation error event for observability
-            if self.coordinator and hasattr(self.coordinator, "hooks"):
-                await self.coordinator.hooks.emit(
-                    "provider:validation_error",
-                    {
-                        "provider": "anthropic",
-                        "validation": "tool_use_tool_result_consistency",
-                        "error": str(e),
-                        "message_count": len(anthropic_messages),
-                    },
-                )
-
-            # Fail fast with actionable error
-            raise RuntimeError(
-                f"Cannot send messages to Anthropic API: {e}\n\n"
-                f"This is likely a bug in context compaction. Please report this issue."
-            ) from e
-
-        # Extract system message if present
-        system = None
-        for msg in messages:
-            if msg.get("role") == "system":
-                system = msg.get("content", "")
-                break
-
-        # Prepare request parameters
-        params = {
-            "model": kwargs.get("model", self.default_model),
-            "messages": anthropic_messages,
-            "max_tokens": kwargs.get("max_tokens", self.max_tokens),
-            "temperature": kwargs.get("temperature", self.temperature),
-        }
-
-        if system:
-            params["system"] = system
-
-        # Support extended thinking (Anthropic API format)
-        if kwargs.get("extended_thinking"):
-            # Anthropic expects thinking={type: "enabled", budget_tokens: N}
-            budget_tokens = kwargs.get("thinking_budget_tokens", 10000)
-            params["thinking"] = {"type": "enabled", "budget_tokens": budget_tokens}
-            # When thinking is enabled, temperature must be 1
-            params["temperature"] = 1.0
-            # max_tokens must be greater than budget_tokens (add buffer for actual response)
-            if params["max_tokens"] <= budget_tokens:
-                params["max_tokens"] = budget_tokens + 4096  # Budget + response tokens
-            logger.info(
-                f"Extended thinking enabled with budget: {budget_tokens} tokens (temperature=1.0, max_tokens={params['max_tokens']})"
-            )
-
-        # Add tools if provided
-        if "tools" in kwargs:
-            params["tools"] = self._convert_tools(kwargs["tools"])
-
-        logger.info(f"Anthropic API call - model: {params['model']}, thinking: {params.get('thinking')}")
-
-        # Emit llm:request event if coordinator is available
-        if self.coordinator and hasattr(self.coordinator, "hooks"):
-            # INFO level: Summary only
-            await self.coordinator.hooks.emit(
-                "llm:request",
-                {
-                    "provider": "anthropic",
-                    "model": params["model"],
-                    "message_count": len(anthropic_messages),
-                    "thinking_enabled": params.get("thinking") is not None,
-                },
-            )
-
-            # DEBUG level: Full request payload (if debug enabled)
-            if self.debug:
-                await self.coordinator.hooks.emit(
-                    "llm:request:debug",
-                    {
-                        "lvl": "DEBUG",
-                        "provider": "anthropic",
-                        "request": {
-                            "model": params["model"],
-                            "messages": anthropic_messages,
-                            "system": system,
-                            "max_tokens": params["max_tokens"],
-                            "temperature": params["temperature"],
-                            "thinking": params.get("thinking"),
-                        },
-                    },
-                )
-
-        # RAW DEBUG: Complete request params sent to Anthropic API (ultra-verbose)
-        if self.coordinator and hasattr(self.coordinator, "hooks") and self.debug and self.raw_debug:
-            await self.coordinator.hooks.emit(
-                "llm:request:raw",
-                {
-                    "lvl": "DEBUG",
-                    "provider": "anthropic",
-                    "params": params,  # Complete params dict as-is
-                },
-            )
-
-        start_time = time.time()
-        try:
-            response = await asyncio.wait_for(self.client.messages.create(**params), timeout=self.timeout)
-
-            # RAW DEBUG: Complete raw response from Anthropic API (ultra-verbose)
-            if self.coordinator and hasattr(self.coordinator, "hooks") and self.debug and self.raw_debug:
-                await self.coordinator.hooks.emit(
-                    "llm:response:raw",
-                    {
-                        "lvl": "DEBUG",
-                        "provider": "anthropic",
-                        "response": response,  # Complete response object as-is
-                    },
-                )
-            elapsed_ms = int((time.time() - start_time) * 1000)
-            logger.info(f"Anthropic API response received - content blocks: {len(response.content)}")
-
-            # Convert response to standard format
-            content = ""
-            tool_calls = []
-            content_blocks = []
-            thinking_text = ""
-
-            for block in response.content:
-                logger.info(f"Processing block type: {block.type}")
-                if block.type == "text":
-                    content = block.text
-                    content_blocks.append(TextContent(text=block.text, raw=block))
-                elif block.type == "thinking":
-                    logger.info(f"Found thinking block with {len(block.thinking)} chars")
-                    thinking_text = block.thinking
-                    content_blocks.append(ThinkingContent(text=block.thinking, raw=block))
-
-                    # Emit thinking:final event for the complete thinking block
-                    if self.coordinator and hasattr(self.coordinator, "hooks"):
-                        await self.coordinator.hooks.emit("thinking:final", {"text": block.thinking})
-                elif block.type == "tool_use":
-                    tool_calls.append(ToolCall(tool=block.name, arguments=block.input, id=block.id))
-                    content_blocks.append(
-                        ToolCallContent(id=block.id, name=block.name, arguments=block.input, raw=block)
-                    )
-
-            # Emit llm:response event with success
-            if self.coordinator and hasattr(self.coordinator, "hooks"):
-                # INFO level: Summary only
-                await self.coordinator.hooks.emit(
-                    "llm:response",
-                    {
-                        "provider": "anthropic",
-                        "model": params["model"],
-                        "usage": {
-                            "input": response.usage.input_tokens,
-                            "output": response.usage.output_tokens,
-                        },
-                        "has_thinking": bool(thinking_text),
-                        "status": "ok",
-                        "duration_ms": elapsed_ms,
-                    },
-                )
-
-                # DEBUG level: Full response (if debug enabled)
-                if self.debug:
-                    await self.coordinator.hooks.emit(
-                        "llm:response:debug",
-                        {
-                            "lvl": "DEBUG",
-                            "provider": "anthropic",
-                            "response": {
-                                "content": content,
-                                "thinking": thinking_text[:500] + "..." if len(thinking_text) > 500 else thinking_text,
-                                "tool_calls": [{"tool": tc.tool, "id": tc.id} for tc in tool_calls]
-                                if tool_calls
-                                else [],
-                                "stop_reason": response.stop_reason,
-                            },
-                            "status": "ok",
-                            "duration_ms": elapsed_ms,
-                        },
-                    )
-
-            return ProviderResponse(
-                content=content,
-                raw=response,
-                usage={"input": response.usage.input_tokens, "output": response.usage.output_tokens},
-                tool_calls=tool_calls if tool_calls else None,
-                content_blocks=content_blocks if content_blocks else None,
-            )
-
-        except Exception as e:
-            logger.error(f"Anthropic API error: {e}")
-
-            # Emit llm:response event with error
-            if self.coordinator and hasattr(self.coordinator, "hooks"):
-                await self.coordinator.hooks.emit(
-                    "llm:response",
-                    {
-                        "provider": "anthropic",
-                        "model": params.get("model", self.default_model),
-                        "status": "error",
-                        "duration_ms": int((time.time() - start_time) * 1000),
-                        "error": str(e),
-                    },
-                )
-
-            raise
+        return await self._complete_chat_request(request, **kwargs)
 
     async def _complete_chat_request(self, request: ChatRequest, **kwargs) -> ChatResponse:
         """Handle ChatRequest format with developer message conversion.
@@ -351,7 +122,7 @@ class AnthropicProvider:
         # Separate messages by role
         system_msgs = [m for m in request.messages if m.role == "system"]
         developer_msgs = [m for m in request.messages if m.role == "developer"]
-        conversation = [m for m in request.messages if m.role in ("user", "assistant")]
+        conversation = [m for m in request.messages if m.role in ("user", "assistant", "tool")]
 
         logger.debug(
             f"Separated: {len(system_msgs)} system, {len(developer_msgs)} developer, {len(conversation)} conversation"
@@ -403,7 +174,7 @@ class AnthropicProvider:
             params["tools"] = self._convert_tools_from_request(request.tools)
 
         logger.info(
-            f"[PROVIDER] Anthropic API call - model: {params['model']}, messages: {len(params['messages'])}, system: {bool(system)}"
+            f"[PROVIDER] Anthropic API call - model: {params['model']}, messages: {len(params['messages'])}, system: {bool(system)}, tools: {len(params.get('tools', []))}"
         )
 
         # Emit llm:request event
@@ -432,6 +203,7 @@ class AnthropicProvider:
                             "system": system,
                             "max_tokens": params["max_tokens"],
                             "temperature": params["temperature"],
+                            "tools": params.get("tools"),
                         },
                     },
                 )
@@ -501,15 +273,15 @@ class AnthropicProvider:
                 )
             raise
 
-    def parse_tool_calls(self, response: ProviderResponse) -> list[ToolCall]:
+    def parse_tool_calls(self, response: ChatResponse) -> list[ToolCall]:
         """
-        Parse tool calls from provider response.
+        Parse tool calls from ChatResponse.
 
         Filters out tool calls with empty/missing arguments to handle
         Anthropic API quirk where empty tool_use blocks are sometimes generated.
 
         Args:
-            response: Provider response
+            response: Typed chat response
 
         Returns:
             List of valid tool calls (with non-empty arguments)
@@ -523,7 +295,7 @@ class AnthropicProvider:
         for tc in response.tool_calls:
             # Skip tool calls with no arguments or empty dict
             if not tc.arguments:
-                logger.debug(f"Filtering out tool '{tc.tool}' with empty arguments")
+                logger.debug(f"Filtering out tool '{tc.name}' with empty arguments")
                 continue
             valid_calls.append(tc)
 
@@ -531,208 +303,6 @@ class AnthropicProvider:
             logger.info(f"Filtered {len(response.tool_calls) - len(valid_calls)} tool calls with empty arguments")
 
         return valid_calls
-
-    def _repair_incomplete_tool_sequences(
-        self, messages: list[dict[str, Any]]
-    ) -> tuple[list[dict[str, Any]], int, list[dict]]:
-        """Repair incomplete tool_use/tool_result sequences in Anthropic format.
-
-        When assistant messages have tool_use blocks without matching tool_results, inject
-        synthetic results that make the failure visible to the LLM while allowing the
-        conversation to continue (graceful degradation).
-
-        Anthropic format: assistant content blocks contain tool_use, next user message
-        contains tool_result blocks.
-
-        Returns:
-            (repaired_messages, count_of_repairs_made, list_of_repairs)
-        """
-        if not messages:
-            return messages, 0, []
-
-        repaired = list(messages)
-        repair_count = 0
-        repairs_made = []
-        i = 0
-
-        while i < len(repaired):
-            msg = repaired[i]
-
-            # Check assistant messages for tool_use blocks
-            if msg.get("role") == "assistant":
-                content = msg.get("content", [])
-
-                if isinstance(content, list):
-                    # Extract tool_use blocks
-                    tool_uses = [
-                        block for block in content if isinstance(block, dict) and block.get("type") == "tool_use"
-                    ]
-
-                    if tool_uses:
-                        # Get all tool_use IDs
-                        tool_use_ids = {tu.get("id") for tu in tool_uses if tu.get("id")}
-
-                        # Check if next message is user with tool_results
-                        has_user_msg = i + 1 < len(repaired) and repaired[i + 1].get("role") == "user"
-                        result_ids = set()
-
-                        if has_user_msg:
-                            next_content = repaired[i + 1].get("content", [])
-                            if isinstance(next_content, list):
-                                # Extract existing tool_result IDs from list content
-                                result_ids = {
-                                    block.get("tool_use_id")
-                                    for block in next_content
-                                    if isinstance(block, dict) and block.get("type") == "tool_result"
-                                }
-
-                        # Find missing tool_results
-                        missing_ids = tool_use_ids - result_ids
-
-                        if missing_ids:
-                            # Create synthetic results for all missing IDs
-                            synthetic_results = []
-                            for tool_use in tool_uses:
-                                if tool_use.get("id") in missing_ids:
-                                    synthetic_results.append(
-                                        {
-                                            "type": "tool_result",
-                                            "tool_use_id": tool_use.get("id"),
-                                            "content": (
-                                                f"[SYSTEM ERROR: Tool result missing from conversation history]\n\n"
-                                                f"Tool: {tool_use.get('name')}\n"
-                                                f"Input: {self._safe_stringify(tool_use.get('input'))}\n\n"
-                                                f"This likely indicates:\n"
-                                                f"- Context compaction dropped this result\n"
-                                                f"- Parsing error in message history\n"
-                                                f"- State corruption during session\n\n"
-                                                f"The tool may have executed successfully, but the result was lost.\n"
-                                                f"Please acknowledge this error and ask the user to retry if needed."
-                                            ),
-                                        }
-                                    )
-
-                                    repairs_made.append(
-                                        {
-                                            "tool_use_id": tool_use.get("id"),
-                                            "tool_name": tool_use.get("name"),
-                                            "message_index": i,
-                                        }
-                                    )
-
-                            # Decide where to inject based on next message structure
-                            if has_user_msg:
-                                next_content = repaired[i + 1].get("content", [])
-                                if isinstance(next_content, list):
-                                    # Append to existing list content
-                                    repaired[i + 1]["content"].extend(synthetic_results)
-                                else:
-                                    # Convert string content to list, prepend synthetic results
-                                    repaired[i + 1]["content"] = synthetic_results
-                            else:
-                                # Insert new user message with synthetic results
-                                repaired.insert(i + 1, {"role": "user", "content": synthetic_results})
-
-                            repair_count += len(synthetic_results)
-                            logger.warning(
-                                "Injected %d synthetic tool_result(s) for Anthropic API (missing IDs: %s)",
-                                len(missing_ids),
-                                sorted(str(id) for id in missing_ids),
-                            )
-
-            i += 1
-
-        return repaired, repair_count, repairs_made
-
-    def _safe_stringify(self, value: Any) -> str:
-        """Safely convert value to string for error messages."""
-        if value is None:
-            return "null"
-        if isinstance(value, str):
-            return value[:500] + ("..." if len(value) > 500 else "")
-        if isinstance(value, dict):
-            try:
-                import json
-
-                json_str = json.dumps(value, ensure_ascii=False)
-                return json_str[:500] + ("..." if len(json_str) > 500 else "")
-            except Exception:
-                return str(value)[:500]
-        return str(value)[:500]
-
-    def _validate_anthropic_tool_consistency(self, messages: list[dict[str, Any]]) -> None:
-        """Validate tool_use/tool_result pairing per Anthropic API requirements.
-
-        Anthropic requires: Each tool_use in message N must have matching tool_result
-        in message N+1. This validation catches state corruption bugs before they hit
-        the API (defense in depth).
-
-        Args:
-            messages: Anthropic-formatted messages to validate
-
-        Raises:
-            ValueError: If tool_use/tool_result pairs are inconsistent
-        """
-        i = 0
-        while i < len(messages):
-            msg = messages[i]
-
-            # Anthropic format: assistant messages may have content blocks with tool_use
-            if msg.get("role") == "assistant":
-                content = msg.get("content", [])
-
-                # Check if content is a list with tool_use blocks
-                if isinstance(content, list):
-                    tool_use_ids = {
-                        block.get("id")
-                        for block in content
-                        if isinstance(block, dict) and block.get("type") == "tool_use"
-                    }
-
-                    if tool_use_ids:
-                        # Next message MUST be user with tool_result blocks
-                        if i + 1 >= len(messages):
-                            raise ValueError(
-                                f"Anthropic API invariant violated: Message {i} has tool_use blocks "
-                                f"but no following message. Tool IDs: {tool_use_ids}. "
-                                f"Each tool_use MUST have matching tool_result in next message."
-                            )
-
-                        next_msg = messages[i + 1]
-                        if next_msg.get("role") != "user":
-                            raise ValueError(
-                                f"Anthropic API invariant violated: Message {i} has tool_use blocks "
-                                f"but next message is role='{next_msg.get('role')}' (expected 'user' with tool_results)."
-                            )
-
-                        # Extract tool_result IDs from next message
-                        next_content = next_msg.get("content", [])
-                        if isinstance(next_content, list):
-                            result_ids = {
-                                block.get("tool_use_id")
-                                for block in next_content
-                                if isinstance(block, dict) and block.get("type") == "tool_result"
-                            }
-
-                            # Validate all tool_use IDs have matching tool_results
-                            missing = tool_use_ids - result_ids
-                            if missing:
-                                raise ValueError(
-                                    f"Anthropic API invariant violated: Message {i} has tool_use IDs "
-                                    f"without matching tool_result blocks: {missing}. "
-                                    f"This indicates a compaction bug or state corruption."
-                                )
-
-                            # Warn about orphaned tool_results (possible retry bug)
-                            extra = result_ids - tool_use_ids
-                            if extra:
-                                raise ValueError(
-                                    f"Anthropic API invariant violated: Message {i + 1} has tool_result blocks "
-                                    f"without matching tool_use: {extra}. "
-                                    f"This indicates stale results from a failed retry."
-                                )
-
-            i += 1
 
     def _convert_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Convert messages to Anthropic format.
@@ -832,24 +402,6 @@ class AnthropicProvider:
                 i += 1
 
         return anthropic_messages
-
-    def _convert_tools(self, tools: list[Any]) -> list[dict[str, Any]]:
-        """Convert tools to Anthropic format."""
-        anthropic_tools = []
-
-        for tool in tools:
-            # Get schema from tool if available, otherwise use empty schema
-            input_schema = getattr(tool, "input_schema", {"type": "object", "properties": {}, "required": []})
-
-            anthropic_tools.append(
-                {
-                    "name": tool.name,
-                    "description": tool.description,
-                    "input_schema": input_schema,
-                }
-            )
-
-        return anthropic_tools
 
     def _convert_tools_from_request(self, tools: list) -> list[dict[str, Any]]:
         """Convert ToolSpec objects from ChatRequest to Anthropic format.
