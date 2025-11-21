@@ -94,6 +94,53 @@ class AnthropicProvider:
         self.raw_debug = self.config.get("raw_debug", False)  # Enable ultra-verbose raw API I/O logging
         self.timeout = self.config.get("timeout", 300.0)  # API timeout in seconds (default 5 minutes)
 
+    def _find_missing_tool_results(self, messages: list[Message]) -> list[tuple[str, str, dict]]:
+        """Find tool calls without matching results.
+
+        Scans conversation for assistant tool calls and validates each has
+        a corresponding tool result message. Returns missing pairs.
+
+        Returns:
+            List of (call_id, tool_name, tool_arguments) tuples for unpaired calls
+        """
+        tool_calls = {}  # {call_id: (name, args)}
+        tool_results = set()  # {call_id}
+
+        for msg in messages:
+            # Check assistant messages for ToolCallBlock in content
+            if msg.role == "assistant" and isinstance(msg.content, list):
+                for block in msg.content:
+                    if hasattr(block, "type") and block.type == "tool_call":
+                        tool_calls[block.id] = (block.name, block.input)
+
+            # Check tool messages for tool_call_id
+            elif msg.role == "tool" and hasattr(msg, "tool_call_id") and msg.tool_call_id:
+                tool_results.add(msg.tool_call_id)
+
+        return [(call_id, name, args) for call_id, (name, args) in tool_calls.items() if call_id not in tool_results]
+
+    def _create_synthetic_result(self, call_id: str, tool_name: str) -> Message:
+        """Create synthetic error result for missing tool response.
+
+        This is a BACKUP for when tool results go missing AFTER execution.
+        The orchestrator should handle tool execution errors at runtime,
+        so this should only trigger on context/parsing bugs.
+        """
+        return Message(
+            role="tool",
+            content=(
+                f"[SYSTEM ERROR: Tool result missing from conversation history]\n\n"
+                f"Tool: {tool_name}\n"
+                f"Call ID: {call_id}\n\n"
+                f"This indicates the tool result was lost after execution.\n"
+                f"Likely causes: context compaction bug, message parsing error, or state corruption.\n\n"
+                f"The tool may have executed successfully, but the result was lost.\n"
+                f"Please acknowledge this error and offer to retry the operation."
+            ),
+            tool_call_id=call_id,
+            name=tool_name,
+        )
+
     async def complete(self, request: ChatRequest, **kwargs) -> ChatResponse:
         """
         Generate completion from ChatRequest.
@@ -105,6 +152,34 @@ class AnthropicProvider:
         Returns:
             ChatResponse with content blocks, tool calls, usage
         """
+        # VALIDATE AND REPAIR: Check for missing tool results (backup safety net)
+        missing = self._find_missing_tool_results(request.messages)
+
+        if missing:
+            logger.warning(
+                f"[PROVIDER] Anthropic: Detected {len(missing)} missing tool result(s). "
+                f"Injecting synthetic errors. This indicates a bug in context management. "
+                f"Tool IDs: {[call_id for call_id, _, _ in missing]}"
+            )
+
+            # Inject synthetic results
+            for call_id, tool_name, _ in missing:
+                synthetic = self._create_synthetic_result(call_id, tool_name)
+                request.messages.append(synthetic)
+
+            # Emit observability event
+            if self.coordinator and hasattr(self.coordinator, "hooks"):
+                await self.coordinator.hooks.emit(
+                    "provider:tool_sequence_repaired",
+                    {
+                        "provider": self.name,
+                        "repair_count": len(missing),
+                        "repairs": [
+                            {"tool_call_id": call_id, "tool_name": tool_name} for call_id, tool_name, _ in missing
+                        ],
+                    },
+                )
+
         return await self._complete_chat_request(request, **kwargs)
 
     async def _complete_chat_request(self, request: ChatRequest, **kwargs) -> ChatResponse:
