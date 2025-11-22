@@ -467,6 +467,45 @@ class AnthropicProvider:
 
         return valid_calls
 
+    def _clean_content_block(self, block: dict[str, Any]) -> dict[str, Any]:
+        """Clean a content block for API by removing fields not accepted by Anthropic API.
+
+        Anthropic API may include extra fields (like 'visibility') in responses,
+        but does NOT accept these fields when blocks are sent as input in messages.
+
+        Args:
+            block: Raw content block dict (may include visibility, etc.)
+
+        Returns:
+            Cleaned content block dict with only API-accepted fields
+        """
+        block_type = block.get("type")
+
+        if block_type == "text":
+            return {"type": "text", "text": block.get("text", "")}
+        if block_type == "thinking":
+            cleaned = {"type": "thinking", "thinking": block.get("thinking", "")}
+            if "signature" in block:
+                cleaned["signature"] = block["signature"]
+            return cleaned
+        if block_type == "tool_use":
+            return {
+                "type": "tool_use",
+                "id": block.get("id", ""),
+                "name": block.get("name", ""),
+                "input": block.get("input", {}),
+            }
+        if block_type == "tool_result":
+            return {
+                "type": "tool_result",
+                "tool_use_id": block.get("tool_use_id", ""),
+                "content": block.get("content", ""),
+            }
+        # Unknown block type - return as-is but remove visibility
+        cleaned = dict(block)
+        cleaned.pop("visibility", None)
+        return cleaned
+
     def _convert_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Convert messages to Anthropic format.
 
@@ -525,8 +564,9 @@ class AnthropicProvider:
 
                     # CRITICAL: Check for thinking block and add it FIRST
                     if "thinking_block" in msg and msg["thinking_block"]:
-                        # Use the raw thinking block which includes signature
-                        content_blocks.append(msg["thinking_block"])
+                        # Clean thinking block (remove visibility field not accepted by API)
+                        cleaned_thinking = self._clean_content_block(msg["thinking_block"])
+                        content_blocks.append(cleaned_thinking)
 
                     # Add text content if present
                     if content:
@@ -546,13 +586,21 @@ class AnthropicProvider:
                     anthropic_messages.append({"role": "assistant", "content": content_blocks})
                 elif "thinking_block" in msg and msg["thinking_block"]:
                     # Assistant message with thinking block
-                    content_blocks = [msg["thinking_block"]]
+                    # Clean thinking block (remove visibility field not accepted by API)
+                    cleaned_thinking = self._clean_content_block(msg["thinking_block"])
+                    content_blocks = [cleaned_thinking]
                     if content:
                         content_blocks.append({"type": "text", "text": content})
                     anthropic_messages.append({"role": "assistant", "content": content_blocks})
                 else:
-                    # Regular assistant message
-                    anthropic_messages.append({"role": "assistant", "content": content})
+                    # Regular assistant message - may have structured content blocks
+                    if isinstance(content, list):
+                        # Content is a list of blocks - clean each block
+                        cleaned_blocks = [self._clean_content_block(block) for block in content]
+                        anthropic_messages.append({"role": "assistant", "content": cleaned_blocks})
+                    else:
+                        # Content is a simple string
+                        anthropic_messages.append({"role": "assistant", "content": content})
                 i += 1
             elif role == "developer":
                 # Developer messages -> XML-wrapped user messages (context files)
