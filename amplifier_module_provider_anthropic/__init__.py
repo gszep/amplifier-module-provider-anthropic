@@ -575,7 +575,7 @@ class AnthropicProvider:
                             for block in content:
                                 if isinstance(block, dict) and block.get("type") == "text":
                                     content_blocks.append({"type": "text", "text": block.get("text", "")})
-                                elif hasattr(block, "type") and block.type == "text":
+                                elif not isinstance(block, dict) and hasattr(block, "type") and block.type == "text":
                                     content_blocks.append({"type": "text", "text": getattr(block, "text", "")})
                         else:
                             # Content is a simple string
@@ -604,7 +604,7 @@ class AnthropicProvider:
                             for block in content:
                                 if isinstance(block, dict) and block.get("type") == "text":
                                     content_blocks.append({"type": "text", "text": block.get("text", "")})
-                                elif hasattr(block, "type") and block.type == "text":
+                                elif not isinstance(block, dict) and hasattr(block, "type") and block.type == "text":
                                     content_blocks.append({"type": "text", "text": getattr(block, "text", "")})
                         else:
                             # Content is a simple string
