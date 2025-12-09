@@ -6,6 +6,9 @@ Supports streaming, tool calling, extended thinking, and ChatRequest format.
 
 __all__ = ["mount", "AnthropicProvider"]
 
+# Amplifier module metadata
+__amplifier_module_type__ = "provider"
+
 import asyncio
 import logging
 import os
