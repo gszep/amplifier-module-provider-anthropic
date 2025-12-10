@@ -107,6 +107,9 @@ class AnthropicProvider:
         self.debug_truncate_length = self.config.get("debug_truncate_length", 180)  # Max string length in debug logs
         self.timeout = self.config.get("timeout", 300.0)  # API timeout in seconds (default 5 minutes)
 
+        # Get base_url from config for custom endpoints (proxies, local APIs, etc.)
+        base_url = self.config.get("base_url")
+
         # Beta headers support for enabling experimental features
         beta_headers_config = self.config.get("beta_headers")
         default_headers = None
@@ -118,8 +121,8 @@ class AnthropicProvider:
             default_headers = {"anthropic-beta": beta_header_value}
             logger.info(f"[PROVIDER] Beta headers enabled: {beta_header_value}")
 
-        # Initialize client with optional beta headers
-        self.client = AsyncAnthropic(api_key=api_key, default_headers=default_headers)
+        # Initialize client with optional beta headers and base_url
+        self.client = AsyncAnthropic(api_key=api_key, base_url=base_url, default_headers=default_headers)
 
     def get_info(self) -> ProviderInfo:
         """Get provider metadata."""
@@ -141,6 +144,15 @@ class AnthropicProvider:
                     field_type="secret",
                     prompt="Enter your Anthropic API key",
                     env_var="ANTHROPIC_API_KEY",
+                ),
+                ConfigField(
+                    id="base_url",
+                    display_name="API Base URL",
+                    field_type="text",
+                    prompt="API base URL",
+                    env_var="ANTHROPIC_BASE_URL",
+                    required=False,
+                    default="https://api.anthropic.com",
                 ),
                 ConfigField(
                     id="enable_1m_context",
