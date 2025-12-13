@@ -4,7 +4,6 @@ Inherits authoritative tests from amplifier-core.
 """
 
 from amplifier_core.validation.structural import ProviderStructuralTests
-
 from amplifier_module_provider_anthropic import AnthropicProvider
 
 
