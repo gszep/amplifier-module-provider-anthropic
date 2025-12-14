@@ -670,13 +670,17 @@ class AnthropicProvider:
                     content_blocks = []
 
                     # CRITICAL: Check for thinking block and add it FIRST
-                    if "thinking_block" in msg and msg["thinking_block"]:
+                    has_thinking = "thinking_block" in msg and msg["thinking_block"]
+                    if has_thinking:
                         # Clean thinking block (remove visibility field not accepted by API)
                         cleaned_thinking = self._clean_content_block(msg["thinking_block"])
                         content_blocks.append(cleaned_thinking)
 
-                    # Add text content if present
-                    if content:
+                    # Add text content if present, BUT skip when we have thinking + tool_calls
+                    # When all three are present (thinking + text + tool_use), the text was generated
+                    # but not shown to user yet (tool calls execute first). Including it in history
+                    # misleads the model into thinking it already communicated that info.
+                    if content and not has_thinking:
                         if isinstance(content, list):
                             # Content is a list of blocks - extract text blocks only
                             for block in content:
