@@ -110,6 +110,19 @@ class AnthropicProvider:
         # Get base_url from config for custom endpoints (proxies, local APIs, etc.)
         base_url = self.config.get("base_url")
 
+        # Handle enable_1m_context from init wizard - translate to beta_headers
+        # This bridges the config field (enable_1m_context boolean) to the actual
+        # beta header that Anthropic API requires (context-1m-2025-08-07)
+        enable_1m = self.config.get("enable_1m_context")
+        if enable_1m and str(enable_1m).lower() in ("true", "1", "yes"):
+            existing_beta = self.config.get("beta_headers", [])
+            if isinstance(existing_beta, str):
+                existing_beta = [existing_beta] if existing_beta else []
+            if "context-1m-2025-08-07" not in existing_beta:
+                existing_beta.append("context-1m-2025-08-07")
+            self.config["beta_headers"] = existing_beta
+            logger.info("[PROVIDER] 1M context window enabled via enable_1m_context config")
+
         # Beta headers support for enabling experimental features
         beta_headers_config = self.config.get("beta_headers")
         default_headers = None
@@ -158,11 +171,12 @@ class AnthropicProvider:
                     id="enable_1m_context",
                     display_name="1M Context Window",
                     field_type="boolean",
-                    prompt="Enable 1M token context window? (sets beta header: context-1m-2025-08-07)",
+                    prompt="Enable 1M token context window? (Sonnet 4/4.5 only, sets beta header)",
                     required=False,
                     default="true",
                     requires_model=True,  # Shown after model selection
-                    show_when={"default_model": "claude-sonnet-4-5-20250929"},
+                    # Note: Removed show_when constraint - 1M context works with Sonnet 4.x models
+                    # If enabled for unsupported model, API will return clear error (fail fast)
                 ),
             ],
         )
