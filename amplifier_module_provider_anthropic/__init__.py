@@ -671,7 +671,20 @@ class AnthropicProvider:
         content array. We cannot send separate user messages for each tool result.
 
         This method batches consecutive tool messages into one user message.
+
+        DEFENSIVE: Also validates that each tool_result has a corresponding tool_use
+        in a preceding assistant message. Orphaned tool_results (from context compaction)
+        are skipped to avoid API errors.
         """
+        # First pass: collect all valid tool_use_ids from assistant messages
+        valid_tool_use_ids: set[str] = set()
+        for msg in messages:
+            if msg.get("role") == "assistant" and msg.get("tool_calls"):
+                for tc in msg.get("tool_calls", []):
+                    tc_id = tc.get("id") or tc.get("tool_call_id")
+                    if tc_id:
+                        valid_tool_use_ids.add(tc_id)
+
         anthropic_messages = []
         i = 0
 
@@ -687,14 +700,23 @@ class AnthropicProvider:
 
             # Batch consecutive tool messages into ONE user message
             if role == "tool":
-                # Collect all consecutive tool results
+                # Collect all consecutive tool results, but only valid ones
                 tool_results = []
+                skipped_count = 0
                 while i < len(messages) and messages[i].get("role") == "tool":
                     tool_msg = messages[i]
                     tool_use_id = tool_msg.get("tool_call_id")
-                    if not tool_use_id:
-                        logger.warning(f"Tool result missing tool_call_id: {tool_msg}")
-                        tool_use_id = "unknown"  # Fallback
+
+                    # DEFENSIVE: Skip tool_results without valid tool_use_id
+                    # This prevents API errors from orphaned tool_results after compaction
+                    if not tool_use_id or tool_use_id not in valid_tool_use_ids:
+                        logger.warning(
+                            f"Skipping orphaned tool_result (no matching tool_use): "
+                            f"tool_call_id={tool_use_id}, content_preview={str(tool_msg.get('content', ''))[:100]}"
+                        )
+                        skipped_count += 1
+                        i += 1
+                        continue
 
                     tool_results.append(
                         {
@@ -705,13 +727,16 @@ class AnthropicProvider:
                     )
                     i += 1
 
-                # Add ONE user message with ALL tool results
-                anthropic_messages.append(
-                    {
-                        "role": "user",
-                        "content": tool_results,  # Array of tool_result blocks
-                    }
-                )
+                # Only add user message if we have valid tool_results
+                if tool_results:
+                    anthropic_messages.append(
+                        {
+                            "role": "user",
+                            "content": tool_results,  # Array of tool_result blocks
+                        }
+                    )
+                elif skipped_count > 0:
+                    logger.warning(f"All {skipped_count} consecutive tool_results were orphaned and skipped")
                 continue  # i already advanced in while loop
             if role == "assistant":
                 # Assistant messages - check for tool calls or thinking blocks
