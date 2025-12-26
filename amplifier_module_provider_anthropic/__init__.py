@@ -99,7 +99,7 @@ class AnthropicProvider:
         self.config = config or {}
         self.coordinator = coordinator
         self.default_model = self.config.get("default_model", "claude-sonnet-4-5")
-        self.max_tokens = self.config.get("max_tokens", 4096)
+        self.max_tokens = self.config.get("max_tokens", 64000)
         self.temperature = self.config.get("temperature", 0.7)
         self.priority = self.config.get("priority", 100)  # Store priority for selection
         self.debug = self.config.get("debug", False)  # Enable full request/response logging
@@ -200,33 +200,33 @@ class AnthropicProvider:
                 id="claude-sonnet-4-5-20250929",
                 display_name="Claude Sonnet 4.5",
                 context_window=200000,
-                max_output_tokens=16000,
+                max_output_tokens=64000,
                 capabilities=["tools", "vision", "thinking", "streaming", "json_mode"],
-                defaults={"temperature": 0.7, "max_tokens": 4096},
+                defaults={"temperature": 0.7, "max_tokens": 64000},
             ),
             ModelInfo(
                 id="claude-haiku-4-5-20251001",
                 display_name="Claude Haiku 4.5",
                 context_window=200000,
-                max_output_tokens=8192,
+                max_output_tokens=64000,
                 capabilities=["tools", "vision", "streaming", "json_mode", "fast"],
-                defaults={"temperature": 0.7, "max_tokens": 4096},
+                defaults={"temperature": 0.7, "max_tokens": 64000},
             ),
             ModelInfo(
                 id="claude-opus-4-5-20251101",
                 display_name="Claude Opus 4.5",
                 context_window=200000,
-                max_output_tokens=32000,
+                max_output_tokens=64000,
                 capabilities=["tools", "vision", "thinking", "streaming", "json_mode"],
-                defaults={"temperature": 0.7, "max_tokens": 4096},
+                defaults={"temperature": 0.7, "max_tokens": 64000},
             ),
             ModelInfo(
                 id="claude-opus-4-1-20250805",
                 display_name="Claude Opus 4.1",
                 context_window=200000,
-                max_output_tokens=32000,
+                max_output_tokens=64000,
                 capabilities=["tools", "vision", "thinking", "streaming", "json_mode"],
-                defaults={"temperature": 0.7, "max_tokens": 4096},
+                defaults={"temperature": 0.7, "max_tokens": 64000},
             ),
         ]
 
@@ -447,8 +447,9 @@ class AnthropicProvider:
         # Enable extended thinking if requested (equivalent to OpenAI's reasoning)
         thinking_enabled = bool(kwargs.get("extended_thinking"))
         thinking_budget = None
+        interleaved_thinking_enabled = False
         if thinking_enabled:
-            budget_tokens = kwargs.get("thinking_budget_tokens") or self.config.get("thinking_budget_tokens") or 10000
+            budget_tokens = kwargs.get("thinking_budget_tokens") or self.config.get("thinking_budget_tokens") or 32000
             buffer_tokens = kwargs.get("thinking_budget_buffer") or self.config.get("thinking_budget_buffer", 4096)
 
             thinking_budget = budget_tokens
@@ -467,11 +468,25 @@ class AnthropicProvider:
             else:
                 params["max_tokens"] = target_tokens
 
+            # Auto-enable interleaved thinking when extended thinking is enabled.
+            # Interleaved thinking allows Claude 4 models to think between tool calls,
+            # producing better reasoning on complex multi-step tasks.
+            # Uses the beta header: interleaved-thinking-2025-05-14
+            interleaved_thinking_enabled = True
+            existing_headers = params.get("extra_headers", {})
+            existing_beta = existing_headers.get("anthropic-beta", "")
+            beta_headers_list = [h for h in existing_beta.split(",") if h]
+            if "interleaved-thinking-2025-05-14" not in beta_headers_list:
+                beta_headers_list.append("interleaved-thinking-2025-05-14")
+            existing_headers["anthropic-beta"] = ",".join(beta_headers_list)
+            params["extra_headers"] = existing_headers
+
             logger.info(
-                "[PROVIDER] Extended thinking enabled (budget=%s, buffer=%s, temperature=1.0, max_tokens=%s)",
+                "[PROVIDER] Extended thinking enabled (budget=%s, buffer=%s, temperature=1.0, max_tokens=%s, interleaved=%s)",
                 thinking_budget,
                 buffer_tokens,
                 params["max_tokens"],
+                interleaved_thinking_enabled,
             )
 
         # Add stop_sequences if specified
@@ -494,6 +509,7 @@ class AnthropicProvider:
                     "has_system": bool(system),
                     "thinking_enabled": thinking_enabled,
                     "thinking_budget": thinking_budget,
+                    "interleaved_thinking": interleaved_thinking_enabled,
                 },
             )
 
