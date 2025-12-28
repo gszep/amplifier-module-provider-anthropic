@@ -127,13 +127,15 @@ class AnthropicProvider:
             logger.info("[PROVIDER] 1M context window enabled via enable_1m_context config")
 
         # Beta headers support for enabling experimental features
+        # Store as instance variable so we can merge with per-request headers later
         beta_headers_config = self.config.get("beta_headers")
+        self._beta_headers: list[str] = []
         default_headers = None
         if beta_headers_config:
             # Normalize to list (supports string or list of strings)
-            beta_headers_list = [beta_headers_config] if isinstance(beta_headers_config, str) else beta_headers_config
+            self._beta_headers = [beta_headers_config] if isinstance(beta_headers_config, str) else list(beta_headers_config)
             # Build anthropic-beta header value (comma-separated)
-            beta_header_value = ",".join(beta_headers_list)
+            beta_header_value = ",".join(self._beta_headers)
             default_headers = {"anthropic-beta": beta_header_value}
             logger.info(f"[PROVIDER] Beta headers enabled: {beta_header_value}")
 
@@ -475,14 +477,16 @@ class AnthropicProvider:
             # Interleaved thinking allows Claude 4 models to think between tool calls,
             # producing better reasoning on complex multi-step tasks.
             # Uses the beta header: interleaved-thinking-2025-05-14
+            #
+            # IMPORTANT: We must merge with the instance's configured beta headers
+            # (e.g., context-1m-2025-08-07 for 1M context window). The extra_headers
+            # in params will override the client's default_headers for the same key,
+            # so we need to include ALL beta headers in the combined value.
             interleaved_thinking_enabled = True
-            existing_headers = params.get("extra_headers", {})
-            existing_beta = existing_headers.get("anthropic-beta", "")
-            beta_headers_list = [h for h in existing_beta.split(",") if h]
-            if "interleaved-thinking-2025-05-14" not in beta_headers_list:
-                beta_headers_list.append("interleaved-thinking-2025-05-14")
-            existing_headers["anthropic-beta"] = ",".join(beta_headers_list)
-            params["extra_headers"] = existing_headers
+            combined_beta_headers = list(self._beta_headers)  # Start with configured headers
+            if "interleaved-thinking-2025-05-14" not in combined_beta_headers:
+                combined_beta_headers.append("interleaved-thinking-2025-05-14")
+            params["extra_headers"] = {"anthropic-beta": ",".join(combined_beta_headers)}
 
             logger.info(
                 "[PROVIDER] Extended thinking enabled (budget=%s, buffer=%s, temperature=1.0, max_tokens=%s, interleaved=%s)",
