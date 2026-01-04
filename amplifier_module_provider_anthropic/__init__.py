@@ -211,45 +211,68 @@ class AnthropicProvider:
 
     async def list_models(self) -> list[ModelInfo]:
         """
-        List available Claude models.
+        List available Claude models dynamically from Anthropic API.
 
-        Returns hardcoded list of current Claude models since Anthropic doesn't
-        provide a model listing API.
+        Fetches models from Anthropic's models.list() API and filters to the
+        latest version of each model family (opus, haiku, sonnet).
+
+        Returns:
+            List of ModelInfo for the latest Claude models in each family.
         """
-        return [
-            ModelInfo(
-                id="claude-sonnet-4-5-20250929",
-                display_name="Claude Sonnet 4.5",
-                context_window=200000,
-                max_output_tokens=64000,
-                capabilities=["tools", "vision", "thinking", "streaming", "json_mode"],
-                defaults={"temperature": 0.7, "max_tokens": 64000},
-            ),
-            ModelInfo(
-                id="claude-haiku-4-5-20251001",
-                display_name="Claude Haiku 4.5",
-                context_window=200000,
-                max_output_tokens=64000,
-                capabilities=["tools", "vision", "streaming", "json_mode", "fast"],
-                defaults={"temperature": 0.7, "max_tokens": 64000},
-            ),
-            ModelInfo(
-                id="claude-opus-4-5-20251101",
-                display_name="Claude Opus 4.5",
-                context_window=200000,
-                max_output_tokens=64000,
-                capabilities=["tools", "vision", "thinking", "streaming", "json_mode"],
-                defaults={"temperature": 0.7, "max_tokens": 64000},
-            ),
-            ModelInfo(
-                id="claude-opus-4-1-20250805",
-                display_name="Claude Opus 4.1",
-                context_window=200000,
-                max_output_tokens=64000,
-                capabilities=["tools", "vision", "thinking", "streaming", "json_mode"],
-                defaults={"temperature": 0.7, "max_tokens": 64000},
-            ),
-        ]
+        response = await self.client.models.list()
+        api_models = list(response.data)
+
+        # Group models by family (opus, haiku, sonnet) and find the latest of each
+        families: dict[str, list[tuple[str, str, str]]] = {
+            "opus": [],
+            "haiku": [],
+            "sonnet": [],
+        }
+
+        for model in api_models:
+            model_id = model.id
+            display_name = getattr(model, "display_name", model_id)
+
+            # Determine family from model ID
+            model_id_lower = model_id.lower()
+            for family in families:
+                if family in model_id_lower:
+                    families[family].append((model_id, display_name, str(getattr(model, "created_at", ""))))
+                    break
+
+        # Sort each family by model ID (newer versions have later dates in ID) and take the latest
+        result: list[ModelInfo] = []
+        for family, models in families.items():
+            if not models:
+                continue
+
+            # Sort by model_id descending (IDs contain dates like claude-sonnet-4-5-20250929)
+            models.sort(key=lambda x: x[0], reverse=True)
+            latest_id, latest_display, _ = models[0]
+
+            # Determine capabilities based on family
+            # Haiku is optimized for speed; Opus and Sonnet support extended thinking
+            if family == "haiku":
+                capabilities = ["tools", "vision", "streaming", "json_mode", "fast"]
+            else:
+                capabilities = ["tools", "vision", "thinking", "streaming", "json_mode"]
+
+            result.append(
+                ModelInfo(
+                    id=latest_id,
+                    display_name=latest_display,
+                    context_window=200000,  # All Claude models have 200K context
+                    max_output_tokens=64000,  # All current Claude models support 64K output
+                    capabilities=capabilities,
+                    defaults={"temperature": 0.7, "max_tokens": 64000},
+                )
+            )
+
+        # Sort result by family preference: sonnet first (default), then haiku, then opus
+        family_order = {"sonnet": 0, "haiku": 1, "opus": 2}
+        result.sort(key=lambda m: family_order.get(next((f for f in family_order if f in m.id.lower()), ""), 99))
+
+        return result
 
     def _truncate_values(self, obj: Any, max_length: int | None = None) -> Any:
         """Recursively truncate string values in nested structures.
