@@ -115,6 +115,7 @@ class AnthropicProvider:
         # Use streaming API by default to support large context windows (Anthropic requires streaming
         # for operations that may take > 10 minutes, e.g. with 300k+ token contexts)
         self.use_streaming = self.config.get("use_streaming", True)
+        self.filtered = self.config.get("filtered", True)  # Filter to curated model list by default
 
         # Get base_url from config for custom endpoints (proxies, local APIs, etc.)
         self._base_url = self.config.get("base_url")
@@ -170,7 +171,7 @@ class AnthropicProvider:
             id="anthropic",
             display_name="Anthropic",
             credential_env_vars=["ANTHROPIC_API_KEY"],
-            capabilities=["streaming", "tools", "vision", "thinking", "batch"],
+            capabilities=["streaming", "tools", "thinking", "batch"],
             defaults={
                 "model": "claude-sonnet-4-5-20250929",
                 "max_tokens": 4096,
@@ -213,16 +214,17 @@ class AnthropicProvider:
         """
         List available Claude models dynamically from Anthropic API.
 
-        Fetches models from Anthropic's models.list() API and filters to the
-        latest version of each model family (opus, haiku, sonnet).
+        When filtered=True (default), returns only the latest version of each
+        model family (opus, haiku, sonnet). When filtered=False, returns all
+        available Claude models.
 
         Returns:
-            List of ModelInfo for the latest Claude models in each family.
+            List of ModelInfo for available Claude models.
         """
         response = await self.client.models.list()
         api_models = list(response.data)
 
-        # Group models by family (opus, haiku, sonnet) and find the latest of each
+        # Group models by family (opus, haiku, sonnet)
         families: dict[str, list[tuple[str, str, str]]] = {
             "opus": [],
             "haiku": [],
@@ -240,33 +242,36 @@ class AnthropicProvider:
                     families[family].append((model_id, display_name, str(getattr(model, "created_at", ""))))
                     break
 
-        # Sort each family by model ID (newer versions have later dates in ID) and take the latest
         result: list[ModelInfo] = []
+
         for family, models in families.items():
             if not models:
                 continue
 
             # Sort by model_id descending (IDs contain dates like claude-sonnet-4-5-20250929)
             models.sort(key=lambda x: x[0], reverse=True)
-            latest_id, latest_display, _ = models[0]
 
-            # Determine capabilities based on family
-            # Haiku is optimized for speed; Opus and Sonnet support extended thinking
-            if family == "haiku":
-                capabilities = ["tools", "vision", "streaming", "json_mode", "fast"]
-            else:
-                capabilities = ["tools", "vision", "thinking", "streaming", "json_mode"]
+            # When filtered, only include the latest; otherwise include all
+            models_to_include = [models[0]] if self.filtered else models
 
-            result.append(
-                ModelInfo(
-                    id=latest_id,
-                    display_name=latest_display,
-                    context_window=200000,  # All Claude models have 200K context
-                    max_output_tokens=64000,  # All current Claude models support 64K output
-                    capabilities=capabilities,
-                    defaults={"temperature": 0.7, "max_tokens": 64000},
+            for model_id, display_name, _ in models_to_include:
+                # Determine capabilities based on family
+                # Haiku is optimized for speed; Opus and Sonnet support extended thinking
+                if family == "haiku":
+                    capabilities = ["tools", "streaming", "json_mode", "fast"]
+                else:
+                    capabilities = ["tools", "thinking", "streaming", "json_mode"]
+
+                result.append(
+                    ModelInfo(
+                        id=model_id,
+                        display_name=display_name,
+                        context_window=200000,  # All Claude models have 200K context
+                        max_output_tokens=64000,  # All current Claude models support 64K output
+                        capabilities=capabilities,
+                        defaults={"temperature": 0.7, "max_tokens": 64000},
+                    )
                 )
-            )
 
         # Sort result by family preference: sonnet first (default), then haiku, then opus
         family_order = {"sonnet": 0, "haiku": 1, "opus": 2}
