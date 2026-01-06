@@ -818,8 +818,9 @@ class AnthropicProvider:
                     },
                 )
             
-            # Re-raise with actionable message
-            raise RateLimitError(error_msg) from e
+            # Re-raise the original exception (can't construct new RateLimitError without response/body)
+            # The actionable error_msg has already been logged above
+            raise
 
         except Exception as e:
             elapsed_ms = int((time.time() - start_time) * 1000)
