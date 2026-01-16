@@ -4,7 +4,7 @@ Integrates with Claude Code CLI via claude-agent-sdk for Claude Max subscription
 Enables using Amplifier with a Claude Max subscription instead of Anthropic API billing.
 """
 
-__all__ = ["mount", "ClaudeCodeProvider"]
+__all__ = ["mount", "AnthropicProvider"]
 
 # Amplifier module metadata
 __amplifier_module_type__ = "provider"
@@ -13,7 +13,14 @@ import logging
 import time
 from typing import Any
 
-from amplifier_core import ModelInfo, ModuleCoordinator, ProviderInfo
+from amplifier_core import (
+    ModelInfo,
+    ModuleCoordinator,
+    ProviderInfo,
+    TextContent,
+    ThinkingContent,
+    ToolCallContent,
+)
 from amplifier_core.message_models import (
     ChatRequest,
     ChatResponse,
@@ -25,6 +32,14 @@ from amplifier_core.message_models import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+class AnthropicChatResponse(ChatResponse):
+    """ChatResponse with additional fields for streaming UI compatibility."""
+
+    content_blocks: list[TextContent | ThinkingContent | ToolCallContent] | None = None
+    text: str | None = None
+
 
 # Claude Code built-in tools that can be allowed/disallowed
 CLAUDE_CODE_BUILTIN_TOOLS = frozenset(
@@ -64,7 +79,7 @@ async def mount(coordinator: ModuleCoordinator, config: dict[str, Any] | None = 
     """
     config = config or {}
 
-    provider = ClaudeCodeProvider(config, coordinator)
+    provider = AnthropicProvider(config, coordinator)
     await coordinator.mount("providers", provider, name="anthropic")
     logger.info("Mounted AnthropicProvider (via Claude Code subscription)")
 
@@ -72,7 +87,7 @@ async def mount(coordinator: ModuleCoordinator, config: dict[str, Any] | None = 
     return None
 
 
-class ClaudeCodeProvider:
+class AnthropicProvider:
     """Claude Code integration via claude-agent-sdk.
 
     Provides Claude models through Claude Code CLI, using a Claude Max
@@ -193,11 +208,11 @@ class ClaudeCodeProvider:
             CLIJSONDecodeError,
             CLINotFoundError,
             ProcessError,
+            ToolUseBlock,
             query,
         )
         from claude_agent_sdk import TextBlock as SDKTextBlock
         from claude_agent_sdk import ThinkingBlock as SDKThinkingBlock
-        from claude_agent_sdk import ToolUseBlock
 
         start_time = time.time()
 
