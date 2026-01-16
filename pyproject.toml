@@ -1,7 +1,7 @@
 [project]
-name = "amplifier-module-provider-anthropic"
+name = "amplifier-module-provider-claude"
 version = "1.0.0"
-description = "Reference provider module - Anthropic Claude integration for Amplifier"
+description = "Reference provider module - Claude integration for Amplifier"
 license = "MIT"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -14,7 +14,7 @@ dependencies = [
 ]
 
 [project.entry-points."amplifier.modules"]
-provider-anthropic = "amplifier_module_provider_anthropic:mount"
+provider-claude = "amplifier_module_provider_claude:mount"
 
 [build-system]
 requires = [
@@ -27,7 +27,7 @@ package = true
 
 [tool.hatch.build.targets.wheel]
 packages = [
-    "amplifier_module_provider_anthropic",
+    "amplifier_module_provider_claude",
 ]
 
 [tool.hatch.metadata]

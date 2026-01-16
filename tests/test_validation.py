@@ -1,14 +1,14 @@
-"""Structural validation tests for anthropic provider.
+"""Structural validation tests for claude provider.
 
 Inherits authoritative tests from amplifier-core.
 """
 
 from amplifier_core.validation.structural import ProviderStructuralTests
-from amplifier_module_provider_anthropic import AnthropicProvider
+from amplifier_module_provider_claude import ClaudeProvider
 
 
-class TestAnthropicProviderStructural(ProviderStructuralTests):
-    """Run standard provider structural tests for anthropic.
+class TestClaudeProviderStructural(ProviderStructuralTests):
+    """Run standard provider structural tests for claude.
 
     All tests from ProviderStructuralTests run automatically.
     Add module-specific structural tests below if needed.
@@ -20,7 +20,7 @@ class TestBaseUrlConfigField:
 
     def test_base_url_config_field_declared(self):
         """Test that base_url ConfigField is properly declared in get_info()."""
-        provider = AnthropicProvider("test-api-key", {})
+        provider = ClaudeProvider({})
         info = provider.get_info()
 
         # Find the base_url config field
@@ -36,7 +36,7 @@ class TestBaseUrlConfigField:
 
     def test_base_url_config_field_has_env_var(self):
         """Test that base_url ConfigField declares ANTHROPIC_BASE_URL env var."""
-        provider = AnthropicProvider("test-api-key", {})
+        provider = ClaudeProvider({})
         info = provider.get_info()
 
         base_url_field = next(
@@ -49,7 +49,7 @@ class TestBaseUrlConfigField:
 
     def test_base_url_config_field_has_default(self):
         """Test that base_url ConfigField has default value."""
-        provider = AnthropicProvider("test-api-key", {})
+        provider = ClaudeProvider({})
         info = provider.get_info()
 
         base_url_field = next(

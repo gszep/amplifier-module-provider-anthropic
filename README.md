@@ -1,6 +1,6 @@
-# Amplifier Anthropic Provider Module
+# Amplifier Claude Provider Module
 
-Claude model integration for Amplifier via Anthropic API.
+Claude model integration for Amplifier via Claude Code CLI.
 
 ## Prerequisites
 
@@ -25,7 +25,7 @@ Provides access to Anthropic's Claude models (Claude 4 series: Sonnet, Opus, Hai
 
 **Module Type:** Provider
 **Mount Point:** `providers`
-**Entry Point:** `amplifier_module_provider_anthropic:mount`
+**Entry Point:** `amplifier_module_provider_claude:mount`
 
 ## Supported Models
 
@@ -37,8 +37,8 @@ Provides access to Anthropic's Claude models (Claude 4 series: Sonnet, Opus, Hai
 
 ```toml
 [[providers]]
-module = "provider-anthropic"
-name = "anthropic"
+module = "provider-claude"
+name = "claude"
 config = {
     default_model = "claude-sonnet-4-5",
     max_tokens = 8192,
@@ -64,7 +64,7 @@ config = {
 **Example**:
 ```yaml
 providers:
-  - module: provider-anthropic
+  - module: provider-claude
     config:
       debug: true      # Enable debug events
       raw_debug: true  # Enable raw API I/O capture
@@ -77,7 +77,7 @@ The provider uses the Anthropic SDK's built-in retry mechanism for rate limit er
 
 ```yaml
 providers:
-  - module: provider-anthropic
+  - module: provider-claude
     config:
       max_retries: 5  # Number of retry attempts (default: 2)
 ```
@@ -101,7 +101,7 @@ Anthropic provides experimental features through beta headers. Enable these feat
 **Single beta header:**
 ```yaml
 providers:
-  - module: provider-anthropic
+  - module: provider-claude
     config:
       default_model: claude-sonnet-4-5
       beta_headers: "context-1m-2025-08-07"  # Enable 1M token context window
@@ -110,7 +110,7 @@ providers:
 **Multiple beta headers:**
 ```yaml
 providers:
-  - module: provider-anthropic
+  - module: provider-claude
     config:
       default_model: claude-sonnet-4-5
       beta_headers:
@@ -124,7 +124,7 @@ Claude Sonnet 4.5 supports a 1M token context window when the `context-1m-2025-0
 
 ```yaml
 providers:
-  - module: provider-anthropic
+  - module: provider-claude
     config:
       default_model: claude-sonnet-4-5
       beta_headers: "context-1m-2025-08-07"
@@ -155,7 +155,7 @@ export ANTHROPIC_API_KEY="your-api-key-here"
 ```python
 # In amplifier configuration
 [provider]
-name = "anthropic"
+name = "claude"
 default_model = "claude-sonnet-4-5"
 ```
 

@@ -1,10 +1,10 @@
-"""Anthropic provider module for Amplifier.
+"""Claude provider module for Amplifier.
 
 Integrates with Claude Code CLI via claude-agent-sdk for Claude Max subscription usage.
 Enables using Amplifier with a Claude Max subscription instead of Anthropic API billing.
 """
 
-__all__ = ["mount", "AnthropicProvider"]
+__all__ = ["mount", "ClaudeProvider"]
 
 # Amplifier module metadata
 __amplifier_module_type__ = "provider"
@@ -34,7 +34,7 @@ from amplifier_core.message_models import (
 logger = logging.getLogger(__name__)
 
 
-class AnthropicChatResponse(ChatResponse):
+class ClaudeChatResponse(ChatResponse):
     """ChatResponse with additional fields for streaming UI compatibility."""
 
     content_blocks: list[TextContent | ThinkingContent | ToolCallContent] | None = None
@@ -65,7 +65,7 @@ CLAUDE_CODE_BUILTIN_TOOLS = frozenset(
 
 async def mount(coordinator: ModuleCoordinator, config: dict[str, Any] | None = None):
     """
-    Mount the Anthropic provider using Claude Code (Claude Max subscription).
+    Mount the Claude provider using Claude Code (Claude Max subscription).
 
     This fork uses Claude Code CLI for all requests, enabling use of Claude Max
     subscription instead of API billing.
@@ -79,15 +79,15 @@ async def mount(coordinator: ModuleCoordinator, config: dict[str, Any] | None = 
     """
     config = config or {}
 
-    provider = AnthropicProvider(config, coordinator)
-    await coordinator.mount("providers", provider, name="anthropic")
-    logger.info("Mounted AnthropicProvider (via Claude Code subscription)")
+    provider = ClaudeProvider(config, coordinator)
+    await coordinator.mount("providers", provider, name="claude")
+    logger.info("Mounted ClaudeProvider (via Claude Code subscription)")
 
     # No cleanup needed - claude-agent-sdk manages subprocess lifecycle
     return None
 
 
-class AnthropicProvider:
+class ClaudeProvider:
     """Claude Code integration via claude-agent-sdk.
 
     Provides Claude models through Claude Code CLI, using a Claude Max
@@ -101,8 +101,8 @@ class AnthropicProvider:
     - Session continuity (continue/resume)
     """
 
-    name = "anthropic"
-    api_label = "Anthropic (Claude Code)"
+    name = "claude"
+    api_label = "Claude (Claude Code)"
 
     def __init__(
         self,
@@ -136,8 +136,8 @@ class AnthropicProvider:
     def get_info(self) -> ProviderInfo:
         """Get provider metadata."""
         return ProviderInfo(
-            id="anthropic",
-            display_name="Anthropic",
+            id="claude",
+            display_name="Claude",
             credential_env_vars=[],  # Uses Claude Code's own authentication
             capabilities=["streaming", "tools"],
             defaults={
