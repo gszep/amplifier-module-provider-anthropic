@@ -175,28 +175,45 @@ class ClaudeProvider:
 
         system_prompt = "\n\n".join(system_parts) if system_parts else None
 
-        # Extract the user prompt (last user message)
+        # Extract the user prompt from messages
+        # Amplifier adds system reminders as separate user messages, so we need to find
+        # the actual user input (not just system reminders)
+        import re
+
         prompt = ""
         for msg in reversed(request.messages):
             if msg.role == "user":
                 if isinstance(msg.content, str):
-                    prompt = msg.content
+                    content = msg.content
                 elif isinstance(msg.content, list):
-                    # Combine all text blocks
                     text_parts = []
                     for block in msg.content:
                         if hasattr(block, "text"):
                             text_parts.append(block.text)
-                    prompt = "\n".join(text_parts)
-                break
+                    content = "\n".join(text_parts)
+                else:
+                    continue
+
+                # Skip messages that are ONLY system reminders (no actual user content)
+                stripped = re.sub(
+                    r"<system-reminder[^>]*>.*?</system-reminder>\s*",
+                    "",
+                    content,
+                    flags=re.DOTALL,
+                ).strip()
+
+                if stripped:
+                    prompt = stripped
+                    break
 
         if not prompt:
             raise RuntimeError("No user message found in request")
 
         # Build command with JSON output for structured parsing
-        # NOTE: System prompts from Amplifier are intentionally NOT passed to Claude CLI
-        # because they can exceed ARG_MAX limits. Claude Code operates as a pure LLM
-        # provider - Amplifier handles all context management separately.
+        # We pass a minimal system prompt to override Claude Code's default
+        # "software engineering assistant" context. The full Amplifier system prompt
+        # is too large for CLI args (ARG_MAX), so we embed essential instructions
+        # in the user prompt instead.
         cmd = [
             cli_path,
             "-p",  # Print mode (non-interactive)
@@ -204,12 +221,14 @@ class ClaudeProvider:
             model,
             "--output-format",
             "json",  # Get structured response
+            "--system-prompt",
+            "You are a helpful AI assistant. Answer the user's request directly.",
             prompt,  # User prompt as argument
         ]
 
         logger.info(
             f"[PROVIDER] Claude CLI: model={model}, prompt_len={len(prompt)}, "
-            f"system_len={len(system_prompt) if system_prompt else 0} (not passed to CLI)"
+            f"system_len={len(system_prompt) if system_prompt else 0}"
         )
 
         # Execute
