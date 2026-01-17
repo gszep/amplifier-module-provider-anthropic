@@ -317,11 +317,10 @@ class ClaudeProvider:
                 },
             )
 
-        # Build CLI command
+        # Build CLI command (system prompt passed via stdin, not CLI args)
         cmd = self._build_command(
             cli_path=cli_path,
             model=model,
-            system_prompt=system_prompt,
             allowed_tools=allowed_tools,
             disallowed_tools=disallowed_tools,
             permission_mode=permission_mode,
@@ -329,15 +328,16 @@ class ClaudeProvider:
             resume_session_id=resume_session_id,
         )
 
-        # Execute CLI with stdin streaming
-        response = await self._execute_cli(cmd, prompt, model, start_time)
+        # Execute CLI with stdin streaming (includes system prompt)
+        response = await self._execute_cli(
+            cmd, prompt, system_prompt, model, start_time
+        )
         return response
 
     def _build_command(
         self,
         cli_path: str,
         model: str,
-        system_prompt: str | None,
         allowed_tools: list[str] | None,
         disallowed_tools: list[str] | None,
         permission_mode: str | None,
@@ -346,10 +346,11 @@ class ClaudeProvider:
     ) -> list[str]:
         """Build the CLI command with all options.
 
+        Note: System prompt is passed via stdin, not CLI args (to bypass ARG_MAX).
+
         Args:
             cli_path: Path to claude CLI
             model: Model name (sonnet, opus, haiku)
-            system_prompt: System prompt text
             allowed_tools: List of allowed tools
             disallowed_tools: List of disallowed tools
             permission_mode: Permission mode
@@ -370,9 +371,7 @@ class ClaudeProvider:
             model,
         ]
 
-        # System prompt as CLI argument
-        if system_prompt:
-            cmd.extend(["--system-prompt", system_prompt])
+        # NOTE: System prompt is passed via stdin, not CLI args (to bypass ARG_MAX)
 
         # Tool configuration
         if allowed_tools:
@@ -407,16 +406,18 @@ class ClaudeProvider:
         self,
         cmd: list[str],
         prompt: str,
+        system_prompt: str | None,
         model: str,
         start_time: float,
     ) -> ChatResponse:
         """Execute the CLI command and parse response.
 
-        Uses stdin streaming for the prompt, bypassing ARG_MAX for user input.
+        Uses stdin streaming for both system and user prompts, bypassing ARG_MAX.
 
         Args:
             cmd: CLI command list
             prompt: User prompt to send via stdin
+            system_prompt: System prompt to prepend to user message
             model: Model name for event emission
             start_time: Request start time for duration tracking
 
@@ -447,10 +448,20 @@ class ClaudeProvider:
                 raise CLIProcessError("Failed to open subprocess streams", None)
 
             # Send prompt via stdin (NDJSON format)
+            # Include system prompt in user message to bypass ARG_MAX
             # Format: {"type": "user", "message": {"role": "user", "content": "..."}}
+            if system_prompt:
+                # Prepend system prompt as context in the user message
+                full_content = (
+                    f"<system_context>\n{system_prompt}\n</system_context>\n\n"
+                    f"<user_message>\n{prompt}\n</user_message>"
+                )
+            else:
+                full_content = prompt
+
             input_msg = {
                 "type": "user",
-                "message": {"role": "user", "content": prompt},
+                "message": {"role": "user", "content": full_content},
                 "session_id": "default",
             }
             stdin_data = json.dumps(input_msg) + "\n"
