@@ -58,7 +58,12 @@ def test_provider_integration():
     if result.stderr:
         print(f"stderr: {result.stderr}")
 
-    # Verify we got a response containing "2"
+    # Check for errors first
+    combined_output = result.stdout + result.stderr
+    assert "Argument list too long" not in combined_output, (
+        f"ARG_MAX error still occurring: {combined_output}"
+    )
+    assert "Error:" not in result.stdout, f"Error in response: {result.stdout}"
     assert result.returncode == 0, f"amplifier run failed: {result.stderr}"
     assert "2" in result.stdout, f"Expected '2' in response, got: {result.stdout}"
 

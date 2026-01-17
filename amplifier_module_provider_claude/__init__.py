@@ -363,6 +363,7 @@ class ClaudeProvider:
         cmd = [
             cli_path,
             "-p",  # Print mode - REQUIRED for --input-format and --output-format
+            "--verbose",  # REQUIRED for --output-format stream-json
             "--output-format",
             "stream-json",
             "--input-format",
@@ -396,9 +397,8 @@ class ClaudeProvider:
         if self._session_cwd:
             cmd.extend(["--add-dir", self._session_cwd])
 
-        # Debug mode
-        if self.debug:
-            cmd.append("--verbose")
+        # Note: --verbose is always added above (required for stream-json output)
+        # Debug mode could add additional flags in the future if needed
 
         return cmd
 
