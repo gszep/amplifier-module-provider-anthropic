@@ -427,13 +427,16 @@ class ClaudeProvider:
             f"(tokens: {total_input} in, {output_tokens} out)"
         )
 
-        # Build content blocks including any tool calls
+        # Build content blocks
+        # NOTE: Claude Code executes tools internally and returns the final result.
+        # We emit tool events for observability but do NOT return tool_calls to Amplifier,
+        # as that would cause Amplifier's orchestrator to try executing them again.
         content_blocks: list[Any] = [TextBlock(type="text", text=response_text)]
 
         return ChatResponse(
             content=content_blocks,
-            tool_calls=tool_calls if tool_calls else None,
+            tool_calls=None,  # Tools already executed by Claude Code
             usage=usage,
-            finish_reason="end_turn" if not tool_calls else "tool_use",
+            finish_reason="end_turn",  # Response is complete
             metadata=metadata,
         )
