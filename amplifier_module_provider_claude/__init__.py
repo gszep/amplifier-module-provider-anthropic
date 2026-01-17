@@ -18,12 +18,12 @@ import time
 from pathlib import Path
 from typing import Any
 
-from amplifier_core import (
+from amplifier_core import (  # type: ignore
     ModelInfo,
     ModuleCoordinator,
     ProviderInfo,
 )
-from amplifier_core.message_models import (
+from amplifier_core.message_models import (  # type: ignore
     ChatRequest,
     ChatResponse,
     TextBlock,

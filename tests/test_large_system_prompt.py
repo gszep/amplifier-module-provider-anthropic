@@ -4,7 +4,7 @@ Verifies that the system prompt truncation prevents "Argument list too long" err
 without breaking the provider functionality.
 """
 
-from amplifier_core.message_models import ChatRequest, Message
+from amplifier_core.message_models import ChatRequest, Message  # type: ignore
 
 from amplifier_module_provider_claude import MAX_SYSTEM_PROMPT_BYTES, ClaudeProvider
 
@@ -15,7 +15,7 @@ class TestLargeSystemPromptTruncation:
     def test_extract_system_prompt_within_limit(self):
         """Test that normal system prompts are not truncated."""
         provider = ClaudeProvider({})
-        
+
         # Create request with modest system prompt
         request = ChatRequest(
             messages=[
@@ -23,7 +23,7 @@ class TestLargeSystemPromptTruncation:
                 Message(role="user", content="Hello"),
             ]
         )
-        
+
         system_prompt = provider._extract_system_prompt(request)
         assert system_prompt == "You are a helpful assistant."
         assert len(system_prompt) < MAX_SYSTEM_PROMPT_BYTES
@@ -45,12 +45,12 @@ class TestLargeSystemPromptTruncation:
 
     def test_system_prompt_truncation_applied_in_complete(self):
         """Test that truncation is applied during complete() method.
-        
+
         This is a unit test that verifies the truncation logic without
         actually calling Claude Code (which would require the SDK and binary).
         """
         provider = ClaudeProvider({})
-        
+
         # Create a request with a very large system prompt
         large_prompt = "X" * (MAX_SYSTEM_PROMPT_BYTES + 10000)  # 10 KB over limit
         request = ChatRequest(
@@ -59,40 +59,42 @@ class TestLargeSystemPromptTruncation:
                 Message(role="user", content="Hello"),
             ]
         )
-        
+
         system_prompt = provider._extract_system_prompt(request)
-        assert len(system_prompt) == MAX_SYSTEM_PROMPT_BYTES + 10000  # Not yet truncated
-        
+        assert (
+            len(system_prompt) == MAX_SYSTEM_PROMPT_BYTES + 10000
+        )  # Not yet truncated
+
         # Truncation happens in complete(), but we can test the logic directly
         # by simulating what complete() does
         if system_prompt and len(system_prompt) > MAX_SYSTEM_PROMPT_BYTES:
             truncated = system_prompt[:MAX_SYSTEM_PROMPT_BYTES]
             truncated += "\n\n[...truncated due to size limit...]"
-            
+
             assert len(truncated) > MAX_SYSTEM_PROMPT_BYTES  # Now has truncation marker
             assert truncated.endswith("[...truncated due to size limit...]")
 
     def test_truncation_marker_included(self):
         """Test that truncation marker is appended."""
         large_prompt = "X" * (MAX_SYSTEM_PROMPT_BYTES + 1000)
-        
+
         # Simulate truncation
         truncated = large_prompt[:MAX_SYSTEM_PROMPT_BYTES]
         truncated += "\n\n[...truncated due to size limit...]"
-        
+
         assert "[...truncated due to size limit...]" in truncated
         assert truncated.count("[...truncated") == 1
 
     def test_no_truncation_for_none_system_prompt(self):
         """Test that None system prompts don't cause issues."""
         provider = ClaudeProvider({})
-        
+
         request = ChatRequest(
             messages=[
                 Message(role="user", content="Hello"),
             ]
         )
-        
+
         system_prompt = provider._extract_system_prompt(request)
         assert system_prompt is None
 
@@ -106,12 +108,15 @@ class TestLargeSystemPromptTruncation:
     def test_system_prompt_with_file_content(self):
         """Test scenario: system prompt contains file content (real-world case)."""
         # Simulate user providing a large file as system context
-        file_content = """
+        file_content = (
+            """
 # Large Python File
 def function_1():
     pass
-""" * 1000  # Repeat to make it large
-        
+"""
+            * 1000
+        )  # Repeat to make it large
+
         provider = ClaudeProvider({})
         request = ChatRequest(
             messages=[
@@ -119,10 +124,10 @@ def function_1():
                 Message(role="user", content="Analyze this code"),
             ]
         )
-        
+
         system_prompt = provider._extract_system_prompt(request)
         assert len(system_prompt) > MAX_SYSTEM_PROMPT_BYTES
-        
+
         # Verify truncation would work
         truncated = system_prompt[:MAX_SYSTEM_PROMPT_BYTES]
         assert len(truncated) == MAX_SYSTEM_PROMPT_BYTES
@@ -130,11 +135,15 @@ def function_1():
     def test_system_prompt_with_api_schema(self):
         """Test scenario: system prompt contains large API specification."""
         # Simulate user providing a large API schema
-        api_schema = """{
+        api_schema = (
+            """{
   "openapi": "3.0.0",
   "paths": {
-""" + '    "path": {},\n' * 1000 + "  }\n}"
-        
+"""
+            + '    "path": {},\n' * 1000
+            + "  }\n}"
+        )
+
         provider = ClaudeProvider({})
         request = ChatRequest(
             messages=[
@@ -142,7 +151,7 @@ def function_1():
                 Message(role="user", content="Build a client for this API"),
             ]
         )
-        
+
         system_prompt = provider._extract_system_prompt(request)
         assert len(system_prompt) > MAX_SYSTEM_PROMPT_BYTES
 
@@ -159,7 +168,7 @@ class TestSystemPromptExtractionEdgeCases:
                 Message(role="user", content="Hello"),
             ]
         )
-        
+
         system_prompt = provider._extract_system_prompt(request)
         assert system_prompt == ""
 
@@ -172,7 +181,7 @@ class TestSystemPromptExtractionEdgeCases:
                 Message(role="user", content="Hello"),
             ]
         )
-        
+
         system_prompt = provider._extract_system_prompt(request)
         assert system_prompt == "   \n\n  "
 
@@ -180,14 +189,14 @@ class TestSystemPromptExtractionEdgeCases:
         """Test system prompt with unicode characters."""
         provider = ClaudeProvider({})
         unicode_text = "你好 🚀 مرحبا" * 1000  # Repeat unicode text
-        
+
         request = ChatRequest(
             messages=[
                 Message(role="system", content=unicode_text),
                 Message(role="user", content="Hello"),
             ]
         )
-        
+
         system_prompt = provider._extract_system_prompt(request)
         assert len(system_prompt) > 0
         assert "你好" in system_prompt or "🚀" in system_prompt

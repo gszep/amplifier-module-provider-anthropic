@@ -3,7 +3,8 @@
 Inherits authoritative tests from amplifier-core.
 """
 
-from amplifier_core.validation.structural import ProviderStructuralTests
+from amplifier_core.validation.structural import ProviderStructuralTests  # type: ignore
+
 from amplifier_module_provider_claude import ClaudeProvider
 
 

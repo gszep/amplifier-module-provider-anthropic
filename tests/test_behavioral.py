@@ -3,7 +3,7 @@
 Inherits authoritative tests from amplifier-core.
 """
 
-from amplifier_core.validation.behavioral import ProviderBehaviorTests
+from amplifier_core.validation.behavioral import ProviderBehaviorTests  # type: ignore
 
 
 class TestClaudeProviderBehavior(ProviderBehaviorTests):
