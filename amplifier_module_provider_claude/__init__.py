@@ -1,8 +1,7 @@
 """Claude provider module for Amplifier.
 
 Direct CLI integration with Claude Code for Claude Max subscription usage.
-Bypasses claude-agent-sdk limitations (ARG_MAX) by using file-based system prompts
-and stdin streaming for unlimited context sizes.
+Uses stdin streaming (--input-format stream-json) for user prompts.
 """
 
 __all__ = ["mount", "ClaudeProvider"]
@@ -15,7 +14,6 @@ import json
 import logging
 import os
 import shutil
-import tempfile
 import time
 from pathlib import Path
 from typing import Any
@@ -84,10 +82,10 @@ async def mount(coordinator: ModuleCoordinator, config: dict[str, Any] | None = 
     """
     Mount the Claude provider using direct Claude Code CLI integration.
 
-    This implementation bypasses claude-agent-sdk limitations by:
-    - Using --system-prompt-file for unlimited system prompt sizes
-    - Using --input-format stream-json for stdin-based prompts
-    - Streaming responses via stdout JSON parsing
+    This implementation uses:
+    - --input-format stream-json for stdin-based user prompts
+    - --output-format stream-json for streaming responses
+    - --system-prompt for system prompts (CLI argument)
 
     Args:
         coordinator: Module coordinator
@@ -114,11 +112,9 @@ class ClaudeProvider:
 
     Features:
     - Uses Claude Max subscription (no API key required)
-    - Unlimited system prompt size via --system-prompt-file
-    - Unlimited user prompt size via stdin streaming
+    - User prompts via stdin streaming (--input-format stream-json)
     - Supports sonnet, opus, and haiku models
     - Session continuity (continue/resume)
-    - No subprocess argument length limits
     """
 
     name = "claude"
@@ -321,54 +317,27 @@ class ClaudeProvider:
                 },
             )
 
-        # Create temp file for system prompt (bypasses ARG_MAX)
-        system_prompt_file: str | None = None
-        try:
-            if system_prompt:
-                with tempfile.NamedTemporaryFile(
-                    mode="w",
-                    suffix=".txt",
-                    delete=False,
-                    encoding="utf-8",
-                ) as f:
-                    f.write(system_prompt)
-                    system_prompt_file = f.name
-                logger.debug(
-                    f"[PROVIDER] Wrote system prompt to temp file: {system_prompt_file} "
-                    f"({len(system_prompt):,} bytes)"
-                )
+        # Build CLI command
+        cmd = self._build_command(
+            cli_path=cli_path,
+            model=model,
+            system_prompt=system_prompt,
+            allowed_tools=allowed_tools,
+            disallowed_tools=disallowed_tools,
+            permission_mode=permission_mode,
+            continue_session=continue_session,
+            resume_session_id=resume_session_id,
+        )
 
-            # Build CLI command
-            cmd = self._build_command(
-                cli_path=cli_path,
-                model=model,
-                max_turns=max_turns,
-                system_prompt_file=system_prompt_file,
-                allowed_tools=allowed_tools,
-                disallowed_tools=disallowed_tools,
-                permission_mode=permission_mode,
-                continue_session=continue_session,
-                resume_session_id=resume_session_id,
-            )
-
-            # Execute CLI with stdin streaming
-            response = await self._execute_cli(cmd, prompt, model, start_time)
-            return response
-
-        finally:
-            # Clean up temp file
-            if system_prompt_file:
-                try:
-                    Path(system_prompt_file).unlink(missing_ok=True)
-                except Exception as e:
-                    logger.warning(f"Failed to clean up temp file: {e}")
+        # Execute CLI with stdin streaming
+        response = await self._execute_cli(cmd, prompt, model, start_time)
+        return response
 
     def _build_command(
         self,
         cli_path: str,
         model: str,
-        max_turns: int,
-        system_prompt_file: str | None,
+        system_prompt: str | None,
         allowed_tools: list[str] | None,
         disallowed_tools: list[str] | None,
         permission_mode: str | None,
@@ -380,8 +349,7 @@ class ClaudeProvider:
         Args:
             cli_path: Path to claude CLI
             model: Model name (sonnet, opus, haiku)
-            max_turns: Maximum agentic turns
-            system_prompt_file: Path to system prompt file (bypasses ARG_MAX)
+            system_prompt: System prompt text
             allowed_tools: List of allowed tools
             disallowed_tools: List of disallowed tools
             permission_mode: Permission mode
@@ -393,19 +361,18 @@ class ClaudeProvider:
         """
         cmd = [
             cli_path,
+            "-p",  # Print mode - REQUIRED for --input-format and --output-format
             "--output-format",
             "stream-json",
             "--input-format",
             "stream-json",  # Stdin streaming for unlimited prompt size
             "--model",
             model,
-            "--max-turns",
-            str(max_turns),
         ]
 
-        # System prompt via file (bypasses ARG_MAX entirely)
-        if system_prompt_file:
-            cmd.extend(["--system-prompt-file", system_prompt_file])
+        # System prompt as CLI argument
+        if system_prompt:
+            cmd.extend(["--system-prompt", system_prompt])
 
         # Tool configuration
         if allowed_tools:
