@@ -22,7 +22,7 @@ from amplifier_core import (  # type: ignore
     ModuleCoordinator,
     ProviderInfo,
 )
-from amplifier_core.content_models import TextContent, ToolCallContent  # type: ignore
+from amplifier_core.content_models import TextContent  # type: ignore
 from amplifier_core.events import (  # type: ignore
     CONTENT_BLOCK_DELTA,
     CONTENT_BLOCK_END,
@@ -248,6 +248,7 @@ class ClaudeProvider:
         usage_data: dict[str, Any] = {}
         metadata: dict[str, Any] = {}
         tool_calls: list[ToolCall] = []
+        tool_id_to_name: dict[str, str] = {}  # Map tool_use_id to tool name
         tool_results: dict[str, Any] = {}  # Map tool_use_id to result
         block_index = 0
         block_started = False
@@ -322,6 +323,9 @@ class ClaudeProvider:
                         tool_name = block.get("name", "")
                         tool_input = block.get("input", {})
 
+                        # Track tool name for later lookup in tool:post
+                        tool_id_to_name[tool_id] = tool_name
+
                         # Create ToolCall for Amplifier (uses 'arguments' not 'input')
                         tool_call = ToolCall(
                             id=tool_id,
@@ -330,17 +334,14 @@ class ClaudeProvider:
                         )
                         tool_calls.append(tool_call)
 
-                        # Emit tool:pre event
+                        # Emit tool:pre event (use tool_name/tool_input for streaming UI)
                         await self._emit_event(
                             TOOL_PRE,
                             {
-                                "tool_call": ToolCallContent(
-                                    id=tool_id,
-                                    name=tool_name,
-                                    arguments=tool_input,
-                                ),
+                                "tool_name": tool_name,
+                                "tool_input": tool_input,
+                                "tool_call_id": tool_id,
                                 "provider": "claude",
-                                "note": "Tool executed by Claude Code internally",
                             },
                         )
 
@@ -364,12 +365,15 @@ class ClaudeProvider:
                             "is_error": is_error,
                         }
 
-                        # Emit tool:post event
+                        # Emit tool:post event (include tool_name for streaming UI)
                         await self._emit_event(
                             TOOL_POST,
                             {
+                                "tool_name": tool_id_to_name.get(
+                                    tool_use_id, "unknown"
+                                ),
                                 "tool_call_id": tool_use_id,
-                                "result": result_content[:500]
+                                "tool_response": result_content[:500]
                                 if isinstance(result_content, str)
                                 else str(result_content)[:500],
                                 "is_error": is_error,
