@@ -213,6 +213,7 @@ class ClaudeProvider:
             "stream-json",  # Real-time streaming
             "--verbose",  # Required for stream-json
             "--include-partial-messages",  # Get content deltas
+            "--dangerously-skip-permissions",  # Allow tool use without confirmation
         ]
 
         # Add session resumption if we have an existing session
