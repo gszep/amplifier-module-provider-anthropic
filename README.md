@@ -3,6 +3,8 @@
 **Use your Claude Max/Pro subscription with Amplifier** - no API keys or per-token billing required.
 
 This provider integrates Claude models via the Claude Code CLI, enabling Amplifier users to leverage their existing Claude subscription instead of paying for API access.
+> ⚠️
+> If Amplifier finds an `ANTHROPIC_API_KEY` in its environment, it will prefer direct API access. To ensure the CLI provider is used with your Claude subscription, make sure `ANTHROPIC_API_KEY` is not defined in `~/.amplifier/keys.env`.
 
 ## Architecture
 
@@ -16,14 +18,14 @@ This provider follows the same pattern as the official OpenAI provider:
 │  1. Send request with messages + tools                      │
 │      │                                                      │
 │      ▼                                                      │
-│  ┌─────────────────────────────────────────────────────┐   │
-│  │  ClaudeProvider.complete()                          │   │
-│  │  - Converts messages to Claude format               │   │
-│  │  - Injects tool definitions via system prompt       │   │
-│  │  - Invokes Claude Code CLI (--tools "" disabled)    │   │
-│  │  - Parses response for tool_use blocks              │   │
-│  │  - Returns ChatResponse with tool_calls             │   │
-│  └─────────────────────────────────────────────────────┘   │
+│  ┌─────────────────────────────────────────────────────┐    │
+│  │  ClaudeProvider.complete()                          │    │
+│  │  - Converts messages to Claude format               │    │
+│  │  - Injects tool definitions via system prompt       │    │
+│  │  - Invokes Claude Code CLI (--tools "" disabled)    │    │
+│  │  - Parses response for tool_use blocks              │    │
+│  │  - Returns ChatResponse with tool_calls             │    │
+│  └─────────────────────────────────────────────────────┘    │
 │      │                                                      │
 │      ▼                                                      │
 │  2. Orchestrator executes tools                             │
@@ -45,7 +47,7 @@ This provider follows the same pattern as the official OpenAI provider:
 
 - **Python 3.11+**
 - **[UV](https://github.com/astral-sh/uv)** - Fast Python package manager
-- **Claude Code CLI** - Required for Claude Max subscription access
+- **Claude Code CLI** - Required for Claude subscription access
 
 ### Installing UV
 
@@ -65,11 +67,11 @@ curl -fsSL https://claude.ai/install.sh | bash
 
 ## Purpose
 
-Provides access to Anthropic's Claude models (Sonnet, Opus, Haiku) via Claude Code CLI, enabling use of a **Claude Max subscription** instead of API billing.
+Provides access to Anthropic's Claude models (Sonnet, Opus, Haiku) via Claude Code CLI, enabling use of a **Claude subscription** instead of API billing.
 
 ### Key Features
 
-- **No API key required** - Uses Claude Code's authentication (Claude Max subscription)
+- **No API key required** - Uses Claude Code's authentication (Claude subscription)
 - **Full Control mode** - Amplifier orchestrator handles all tool execution
 - **Streaming support** - Real-time content streaming via stream-json
 - **Session continuity** - Continue/resume conversation sessions
@@ -191,7 +193,7 @@ The provider converts Amplifier's message format to Claude CLI format:
 | Aspect | Claude Provider | OpenAI Provider |
 |--------|-----------------|-----------------|
 | Integration | CLI subprocess | Python SDK |
-| Authentication | Claude Max subscription | API key |
+| Authentication | Claude subscription | API key |
 | Tool Control | Full Control (orchestrator) | Full Control (orchestrator) |
 | Streaming | Native stream-json | Blocking API |
 | Dependencies | Zero (CLI only) | openai SDK |
