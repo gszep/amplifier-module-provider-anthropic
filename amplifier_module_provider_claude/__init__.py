@@ -12,6 +12,7 @@ __amplifier_module_type__ = "provider"
 import asyncio
 import json
 import logging
+import re
 import shutil
 import time
 from typing import Any
@@ -20,6 +21,12 @@ from amplifier_core import (  # type: ignore
     ModelInfo,
     ModuleCoordinator,
     ProviderInfo,
+)
+from amplifier_core.content_models import TextContent  # type: ignore
+from amplifier_core.events import (  # type: ignore
+    CONTENT_BLOCK_DELTA,
+    CONTENT_BLOCK_END,
+    CONTENT_BLOCK_START,
 )
 from amplifier_core.message_models import (  # type: ignore
     ChatRequest,
@@ -127,60 +134,12 @@ class ClaudeProvider:
         """
         return response.tool_calls or []
 
-    async def complete(self, request: ChatRequest, **kwargs: Any) -> ChatResponse:
-        """Execute a completion request via Claude Code CLI.
+    def _extract_prompt(self, request: ChatRequest) -> str:
+        """Extract the actual user prompt from messages.
 
-        Handles:
-        - System prompts (passed via --system-prompt flag)
-        - User prompts (passed as CLI argument)
-        - JSON output parsing for structured responses
-        - Token usage tracking
+        Amplifier adds system reminders as separate user messages, so we need to find
+        the actual user input (not just system reminders).
         """
-        start_time = time.time()
-
-        # Find CLI
-        cli_path = shutil.which("claude")
-        if not cli_path:
-            raise RuntimeError(
-                "Claude Code CLI not found. Install with: curl -fsSL https://claude.ai/install.sh | bash"
-            )
-
-        # Get model
-        model = getattr(request, "model", None) or self.default_model
-
-        # Extract system prompt from messages
-        system_parts: list[str] = []
-        for msg in request.messages:
-            if msg.role == "system":
-                if isinstance(msg.content, str):
-                    system_parts.append(msg.content)
-                elif isinstance(msg.content, list):
-                    for block in msg.content:
-                        if hasattr(block, "text"):
-                            system_parts.append(block.text)
-
-        # Extract developer messages (context files) - wrap in XML
-        for msg in request.messages:
-            if msg.role == "developer":
-                if isinstance(msg.content, str):
-                    system_parts.append(
-                        f"<context_file>\n{msg.content}\n</context_file>"
-                    )
-                elif isinstance(msg.content, list):
-                    for block in msg.content:
-                        if hasattr(block, "text"):
-                            system_parts.append(
-                                f"<context_file>\n{block.text}\n</context_file>"
-                            )
-
-        system_prompt = "\n\n".join(system_parts) if system_parts else None
-
-        # Extract the user prompt from messages
-        # Amplifier adds system reminders as separate user messages, so we need to find
-        # the actual user input (not just system reminders)
-        import re
-
-        prompt = ""
         for msg in reversed(request.messages):
             if msg.role == "user":
                 if isinstance(msg.content, str):
@@ -203,49 +162,147 @@ class ClaudeProvider:
                 ).strip()
 
                 if stripped:
-                    prompt = stripped
-                    break
+                    return stripped
 
-        if not prompt:
-            raise RuntimeError("No user message found in request")
+        raise RuntimeError("No user message found in request")
 
-        # Build command with JSON output for structured parsing
-        # We pass a minimal system prompt to override Claude Code's default
-        # "software engineering assistant" context. The full Amplifier system prompt
-        # is too large for CLI args (ARG_MAX), so we embed essential instructions
-        # in the user prompt instead.
+    async def _emit_event(self, event: str, data: dict[str, Any]) -> None:
+        """Emit an event through the coordinator's hooks if available."""
+        if self.coordinator and hasattr(self.coordinator, "hooks"):
+            await self.coordinator.hooks.emit(event, data)
+
+    async def complete(self, request: ChatRequest, **kwargs: Any) -> ChatResponse:
+        """Execute a completion request via Claude Code CLI with real-time streaming.
+
+        Uses stream-json output format to emit content_block events as text arrives,
+        enabling real-time UI updates while still returning a complete ChatResponse.
+        """
+        start_time = time.time()
+
+        # Find CLI
+        cli_path = shutil.which("claude")
+        if not cli_path:
+            raise RuntimeError(
+                "Claude Code CLI not found. Install with: curl -fsSL https://claude.ai/install.sh | bash"
+            )
+
+        # Get model and extract prompt
+        model = getattr(request, "model", None) or self.default_model
+        prompt = self._extract_prompt(request)
+
+        # Build command with streaming JSON output for real-time events
+        # --verbose is required for stream-json format
+        # --include-partial-messages gives us content_block_delta events
         cmd = [
             cli_path,
             "-p",  # Print mode (non-interactive)
             "--model",
             model,
             "--output-format",
-            "json",  # Get structured response
+            "stream-json",  # Real-time streaming
+            "--verbose",  # Required for stream-json
+            "--include-partial-messages",  # Get content deltas
             "--system-prompt",
             "You are a helpful AI assistant. Answer the user's request directly.",
-            prompt,  # User prompt as argument
+            prompt,
         ]
 
         logger.info(
-            f"[PROVIDER] Claude CLI: model={model}, prompt_len={len(prompt)}, "
-            f"system_len={len(system_prompt) if system_prompt else 0}"
+            f"[PROVIDER] Claude CLI streaming: model={model}, prompt_len={len(prompt)}"
         )
 
-        # Execute
+        # Start the process
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
 
-        stdout, stderr = await proc.communicate()
-        raw_output = stdout.decode("utf-8").strip()
+        # Process streaming output line by line
+        response_text = ""
+        usage_data: dict[str, Any] = {}
+        metadata: dict[str, Any] = {}
+        block_index = 0
+        block_started = False
 
-        # Debug: log the raw CLI output
-        logger.info(f"[PROVIDER] Raw CLI output: {raw_output[:500]}...")
+        assert proc.stdout is not None
+
+        async for line in proc.stdout:
+            line_str = line.decode("utf-8").strip()
+            if not line_str:
+                continue
+
+            try:
+                event_data = json.loads(line_str)
+            except json.JSONDecodeError:
+                logger.warning(
+                    f"[PROVIDER] Failed to parse streaming line: {line_str[:100]}"
+                )
+                continue
+
+            event_type = event_data.get("type")
+
+            # Handle stream events (content deltas)
+            if event_type == "stream_event":
+                inner_event = event_data.get("event", {})
+                inner_type = inner_event.get("type")
+
+                if inner_type == "content_block_start":
+                    # Emit content_block:start event
+                    block_started = True
+                    await self._emit_event(
+                        CONTENT_BLOCK_START,
+                        {
+                            "index": block_index,
+                            "content_block": inner_event.get("content_block", {}),
+                        },
+                    )
+
+                elif inner_type == "content_block_delta":
+                    # Extract text delta and emit event
+                    delta = inner_event.get("delta", {})
+                    if delta.get("type") == "text_delta":
+                        text_chunk = delta.get("text", "")
+                        response_text += text_chunk
+
+                        await self._emit_event(
+                            CONTENT_BLOCK_DELTA,
+                            {
+                                "index": block_index,
+                                "delta": TextContent(text=text_chunk),
+                            },
+                        )
+
+                elif inner_type == "content_block_stop":
+                    # Emit content_block:end event
+                    if block_started:
+                        await self._emit_event(
+                            CONTENT_BLOCK_END,
+                            {"index": block_index},
+                        )
+                        block_index += 1
+                        block_started = False
+
+            # Handle final result (contains usage stats)
+            elif event_type == "result":
+                # Use result text if we didn't accumulate from deltas
+                if not response_text:
+                    response_text = event_data.get("result", "")
+
+                usage_data = event_data.get("usage", {})
+                metadata = {
+                    "session_id": event_data.get("session_id"),
+                    "duration_ms": event_data.get("duration_ms"),
+                    "duration_api_ms": event_data.get("duration_api_ms"),
+                    "cost_usd": event_data.get("total_cost_usd"),
+                }
+
+        # Wait for process to complete
+        await proc.wait()
 
         if proc.returncode != 0:
-            error_msg = stderr.decode("utf-8").strip() or raw_output
+            stderr_data = await proc.stderr.read() if proc.stderr else b""
+            error_msg = stderr_data.decode("utf-8").strip()
             logger.error(f"[PROVIDER] CLI failed: {error_msg}")
             raise RuntimeError(
                 f"Claude Code CLI failed (exit {proc.returncode}): {error_msg}"
@@ -253,26 +310,9 @@ class ClaudeProvider:
 
         duration = time.time() - start_time
 
-        # Parse JSON response
-        try:
-            result = json.loads(raw_output)
-        except json.JSONDecodeError as e:
-            logger.error(f"[PROVIDER] Failed to parse JSON response: {e}")
-            # Fall back to raw text if JSON parsing fails
-            return ChatResponse(
-                content=[TextBlock(type="text", text=raw_output)],
-                usage=Usage(input_tokens=0, output_tokens=0, total_tokens=0),
-                finish_reason="end_turn",
-            )
-
-        # Extract response text
-        response_text = result.get("result", "")
-
-        # Extract usage information
-        usage_data = result.get("usage", {})
+        # Build usage information
         input_tokens = usage_data.get("input_tokens", 0)
         output_tokens = usage_data.get("output_tokens", 0)
-        # Include cache tokens in input count for accurate tracking
         cache_read = usage_data.get("cache_read_input_tokens", 0)
         cache_creation = usage_data.get("cache_creation_input_tokens", 0)
         total_input = input_tokens + cache_read + cache_creation
@@ -282,14 +322,6 @@ class ClaudeProvider:
             output_tokens=output_tokens,
             total_tokens=total_input + output_tokens,
         )
-
-        # Build metadata with session info for potential future use
-        metadata = {
-            "session_id": result.get("session_id"),
-            "duration_ms": result.get("duration_ms"),
-            "duration_api_ms": result.get("duration_api_ms"),
-            "cost_usd": result.get("total_cost_usd"),
-        }
 
         logger.info(
             f"[PROVIDER] Response received in {duration:.2f}s "
