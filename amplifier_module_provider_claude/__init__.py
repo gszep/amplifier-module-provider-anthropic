@@ -22,11 +22,13 @@ from amplifier_core import (  # type: ignore
     ModuleCoordinator,
     ProviderInfo,
 )
-from amplifier_core.content_models import TextContent  # type: ignore
+from amplifier_core.content_models import TextContent, ToolCallContent  # type: ignore
 from amplifier_core.events import (  # type: ignore
     CONTENT_BLOCK_DELTA,
     CONTENT_BLOCK_END,
     CONTENT_BLOCK_START,
+    TOOL_POST,
+    TOOL_PRE,
 )
 from amplifier_core.message_models import (  # type: ignore
     ChatRequest,
@@ -222,6 +224,8 @@ class ClaudeProvider:
         response_text = ""
         usage_data: dict[str, Any] = {}
         metadata: dict[str, Any] = {}
+        tool_calls: list[ToolCall] = []
+        tool_results: dict[str, Any] = {}  # Map tool_use_id to result
         block_index = 0
         block_started = False
 
@@ -283,6 +287,73 @@ class ClaudeProvider:
                         block_index += 1
                         block_started = False
 
+            # Handle assistant messages (may contain tool_use blocks)
+            elif event_type == "assistant":
+                message = event_data.get("message", {})
+                content_blocks = message.get("content", [])
+
+                for block in content_blocks:
+                    if block.get("type") == "tool_use":
+                        # Claude Code is requesting a tool call
+                        tool_id = block.get("id", "")
+                        tool_name = block.get("name", "")
+                        tool_input = block.get("input", {})
+
+                        # Create ToolCall for Amplifier (uses 'arguments' not 'input')
+                        tool_call = ToolCall(
+                            id=tool_id,
+                            name=tool_name,
+                            arguments=tool_input,
+                        )
+                        tool_calls.append(tool_call)
+
+                        # Emit tool:pre event
+                        await self._emit_event(
+                            TOOL_PRE,
+                            {
+                                "tool_call": ToolCallContent(
+                                    id=tool_id,
+                                    name=tool_name,
+                                    arguments=tool_input,
+                                ),
+                                "provider": "claude",
+                                "note": "Tool executed by Claude Code internally",
+                            },
+                        )
+
+                        logger.info(
+                            f"[PROVIDER] Tool call: {tool_name}({json.dumps(tool_input)[:100]}...)"
+                        )
+
+            # Handle user messages (contain tool results from Claude Code)
+            elif event_type == "user":
+                message = event_data.get("message", {})
+                content_blocks = message.get("content", [])
+
+                for block in content_blocks:
+                    if block.get("type") == "tool_result":
+                        tool_use_id = block.get("tool_use_id", "")
+                        result_content = block.get("content", "")
+                        is_error = block.get("is_error", False)
+
+                        tool_results[tool_use_id] = {
+                            "content": result_content,
+                            "is_error": is_error,
+                        }
+
+                        # Emit tool:post event
+                        await self._emit_event(
+                            TOOL_POST,
+                            {
+                                "tool_call_id": tool_use_id,
+                                "result": result_content[:500]
+                                if isinstance(result_content, str)
+                                else str(result_content)[:500],
+                                "is_error": is_error,
+                                "provider": "claude",
+                            },
+                        )
+
             # Handle final result (contains usage stats)
             elif event_type == "result":
                 # Use result text if we didn't accumulate from deltas
@@ -295,6 +366,8 @@ class ClaudeProvider:
                     "duration_ms": event_data.get("duration_ms"),
                     "duration_api_ms": event_data.get("duration_api_ms"),
                     "cost_usd": event_data.get("total_cost_usd"),
+                    "num_turns": event_data.get("num_turns"),
+                    "tool_calls_count": len(tool_calls),
                 }
 
         # Wait for process to complete
@@ -328,9 +401,13 @@ class ClaudeProvider:
             f"(tokens: {total_input} in, {output_tokens} out)"
         )
 
+        # Build content blocks including any tool calls
+        content_blocks: list[Any] = [TextBlock(type="text", text=response_text)]
+
         return ChatResponse(
-            content=[TextBlock(type="text", text=response_text)],
+            content=content_blocks,
+            tool_calls=tool_calls if tool_calls else None,
             usage=usage,
-            finish_reason="end_turn",
+            finish_reason="end_turn" if not tool_calls else "tool_use",
             metadata=metadata,
         )
