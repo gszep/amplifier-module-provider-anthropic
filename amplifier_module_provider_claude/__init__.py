@@ -702,8 +702,12 @@ Important:
                         block_index += 1
 
                     elif block_type == "text":
-                        # Extract text content
-                        response_text = block.get("text", "")
+                        # Accumulate text content (multiple text blocks can appear)
+                        text_content = block.get("text", "")
+                        if response_text and text_content:
+                            response_text += "\n" + text_content
+                        else:
+                            response_text += text_content
 
                         # Emit streaming events for text block
                         await self._emit_event(
