@@ -49,6 +49,45 @@ from claude_agent_sdk.types import ClaudeAgentOptions  # type: ignore
 from pydantic import ValidationError
 
 logger = logging.getLogger(__name__)
+
+# --- SDK Compatibility Patch ------------------------------------------------
+# Claude Code CLI v2.1.42+ emits message types (e.g. "rate_limit_event") not
+# yet handled by claude-agent-sdk <= 0.1.38.  The SDK's strict parser raises
+# MessageParseError for unknown types, which kills the async generator inside
+# InternalClient.process_query() (Python generator protocol: unhandled
+# exception = generator finalized).  Catching the error on the consumer side
+# is too late -- the generator is already dead and the ResultMessage is lost.
+#
+# This patch replaces the parse_message reference used by the SDK's internal
+# client so unknown types are converted to StreamEvent objects, which
+# _parse_response already silently ignores (lines 1822-1829).
+#
+# Tracking: https://github.com/anthropics/claude-agent-sdk-python/issues/583
+# Remove once claude-agent-sdk ships the fix (PR #589).
+# ---------------------------------------------------------------------------
+import claude_agent_sdk._internal.client as _sdk_client  # type: ignore
+from claude_agent_sdk._errors import MessageParseError as _MessageParseError  # type: ignore
+
+_original_parse_message = _sdk_client.parse_message
+
+
+def _tolerant_parse_message(data: dict) -> claude_agent_sdk.types.Message:
+    try:
+        return _original_parse_message(data)
+    except _MessageParseError as exc:
+        if "Unknown message type" in str(exc):
+            msg_type = data.get("type", "?")
+            logger.debug("[PROVIDER] Skipping unrecognized SDK message type: %s", msg_type)
+            return claude_agent_sdk.types.StreamEvent(
+                uuid=data.get("uuid", ""),
+                session_id=data.get("session_id", ""),
+                event=data,
+            )
+        raise  # re-raise genuine parse errors (malformed data, missing fields)
+
+
+_sdk_client.parse_message = _tolerant_parse_message
+# --- End SDK Compatibility Patch --------------------------------------------
 SESSION_TAG = "[session]:"
 SESSION = SESSION_TAG + """{"id": null}"""
 
