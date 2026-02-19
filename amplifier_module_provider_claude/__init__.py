@@ -15,6 +15,8 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 
 import claude_agent_sdk  # type: ignore
+import claude_agent_sdk._internal.client as _sdk_internal_client  # type: ignore
+import claude_agent_sdk._internal.message_parser as _sdk_message_parser  # type: ignore
 from amplifier_core import (  # type: ignore
     ModelInfo,
     ModuleCoordinator,
@@ -53,22 +55,28 @@ logger = logging.getLogger(__name__)
 # --- SDK Compatibility Patch ------------------------------------------------
 # Claude Code CLI v2.1.42+ emits message types (e.g. "rate_limit_event") not
 # yet handled by claude-agent-sdk <= 0.1.38.  The SDK's strict parser raises
-# MessageParseError for unknown types, which kills the async generator inside
-# InternalClient.process_query() (Python generator protocol: unhandled
-# exception = generator finalized).  Catching the error on the consumer side
-# is too late -- the generator is already dead and the ResultMessage is lost.
+# MessageParseError for unknown types, which kills the async generator
+# (Python generator protocol: unhandled exception = generator finalized).
+# Catching the error on the consumer side is too late -- the generator is
+# already dead and the ResultMessage (with session ID and usage) is lost.
 #
-# This patch replaces the parse_message reference used by the SDK's internal
-# client so unknown types are converted to StreamEvent objects, which
-# _parse_response already silently ignores (lines 1822-1829).
+# The SDK has TWO call sites for parse_message:
+#   1. _internal/client.py:141  -- InternalClient.process_query()
+#      imports via `from .message_parser import parse_message` at module level
+#   2. client.py:184            -- ClaudeSDKClient.receive_messages()
+#      imports via `from ._internal.message_parser import parse_message`
+#      as a LOCAL import inside the method body (re-resolves every call)
+#
+# The provider uses path (2). Patching `message_parser.parse_message`
+# covers the local import in (2) since it re-reads the module attribute.
+# We also patch `_internal.client.parse_message` for (1) as belt-and-suspenders.
 #
 # Tracking: https://github.com/anthropics/claude-agent-sdk-python/issues/583
 # Remove once claude-agent-sdk ships the fix (PR #589).
 # ---------------------------------------------------------------------------
-import claude_agent_sdk._internal.client as _sdk_client  # type: ignore
 from claude_agent_sdk._errors import MessageParseError as _MessageParseError  # type: ignore
 
-_original_parse_message = _sdk_client.parse_message
+_original_parse_message = _sdk_message_parser.parse_message
 
 
 def _tolerant_parse_message(data: dict) -> claude_agent_sdk.types.Message:
@@ -77,7 +85,7 @@ def _tolerant_parse_message(data: dict) -> claude_agent_sdk.types.Message:
     except _MessageParseError as exc:
         if "Unknown message type" in str(exc):
             msg_type = data.get("type", "?")
-            logger.debug("[PROVIDER] Skipping unrecognized SDK message type: %s", msg_type)
+            logger.info("[PROVIDER] Skipping unrecognized SDK message type: %s", msg_type)
             return claude_agent_sdk.types.StreamEvent(
                 uuid=data.get("uuid", ""),
                 session_id=data.get("session_id", ""),
@@ -86,7 +94,10 @@ def _tolerant_parse_message(data: dict) -> claude_agent_sdk.types.Message:
         raise  # re-raise genuine parse errors (malformed data, missing fields)
 
 
-_sdk_client.parse_message = _tolerant_parse_message
+# Patch the canonical definition (covers local imports that re-resolve)
+_sdk_message_parser.parse_message = _tolerant_parse_message
+# Patch the already-imported binding in _internal/client.py
+_sdk_internal_client.parse_message = _tolerant_parse_message
 # --- End SDK Compatibility Patch --------------------------------------------
 SESSION_TAG = "[session]:"
 SESSION = SESSION_TAG + """{"id": null}"""
