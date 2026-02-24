@@ -26,7 +26,7 @@ from amplifier_core import ProviderInfo
 from amplifier_core import TextContent
 from amplifier_core import ThinkingContent
 from amplifier_core import ToolCallContent
-from amplifier_core.events import PROVIDER_RETRY
+from amplifier_core.events import PROVIDER_RETRY, PROVIDER_THROTTLE
 from amplifier_core.llm_errors import AccessDeniedError as KernelAccessDeniedError
 from amplifier_core.llm_errors import AuthenticationError as KernelAuthenticationError
 from amplifier_core.llm_errors import ContentFilterError as KernelContentFilterError
@@ -51,6 +51,92 @@ class WebSearchContent:
     query: str = ""
     results: list[dict[str, Any]] = field(default_factory=list)
     citations: list[dict[str, str]] = field(default_factory=list)
+
+
+@dataclass
+class _RateLimitState:
+    """Tracks rate limit capacity from response headers for pre-emptive throttling.
+
+    Internal to the provider — not exported, not in core.
+    Updated after every successful API call. Resets when the provider is created.
+    """
+
+    # Requests dimension
+    requests_remaining: int | None = None
+    requests_limit: int | None = None
+    requests_reset: str | None = None
+
+    # Input tokens dimension
+    input_tokens_remaining: int | None = None
+    input_tokens_limit: int | None = None
+    input_tokens_reset: str | None = None
+
+    # Output tokens dimension
+    output_tokens_remaining: int | None = None
+    output_tokens_limit: int | None = None
+    output_tokens_reset: str | None = None
+
+    def update_from_headers(self, rate_limit_info: dict[str, Any] | None) -> None:
+        """Update state from parsed rate limit headers dict."""
+        if not rate_limit_info:
+            return
+        for attr in (
+            "requests_remaining",
+            "requests_limit",
+            "requests_reset",
+            "input_tokens_remaining",
+            "input_tokens_limit",
+            "input_tokens_reset",
+            "output_tokens_remaining",
+            "output_tokens_limit",
+            "output_tokens_reset",
+        ):
+            val = rate_limit_info.get(attr)
+            if val is not None:
+                setattr(self, attr, val)
+
+    def most_constrained_ratio(
+        self,
+    ) -> tuple[float, str, int | None, int | None, str | None]:
+        """Find the dimension with the lowest remaining/limit ratio.
+
+        Returns:
+            Tuple of (ratio, dimension_name, remaining, limit, reset_timestamp).
+            ratio is 1.0 if no data is available (meaning "no constraint known").
+        """
+        best_ratio = 1.0
+        best_dimension = "unknown"
+        best_remaining = None
+        best_limit = None
+        best_reset = None
+
+        for dimension, remaining_attr, limit_attr, reset_attr in (
+            ("requests", "requests_remaining", "requests_limit", "requests_reset"),
+            (
+                "input_tokens",
+                "input_tokens_remaining",
+                "input_tokens_limit",
+                "input_tokens_reset",
+            ),
+            (
+                "output_tokens",
+                "output_tokens_remaining",
+                "output_tokens_limit",
+                "output_tokens_reset",
+            ),
+        ):
+            remaining = getattr(self, remaining_attr)
+            limit = getattr(self, limit_attr)
+            if remaining is not None and limit is not None and limit > 0:
+                ratio = remaining / limit
+                if ratio < best_ratio:
+                    best_ratio = ratio
+                    best_dimension = dimension
+                    best_remaining = remaining
+                    best_limit = limit
+                    best_reset = getattr(self, reset_attr)
+
+        return best_ratio, best_dimension, best_remaining, best_limit, best_reset
 
 
 from amplifier_core.message_models import ChatRequest
@@ -207,6 +293,11 @@ class AnthropicProvider:
             max_delay=float(self.config.get("max_retry_delay", 60.0)),
             jitter=float(jitter_val),
         )
+
+        # Pre-emptive throttle configuration
+        self._throttle_threshold = float(self.config.get("throttle_threshold", 0.1))
+        self._throttle_delay = float(self.config.get("throttle_delay", 5.0))
+        self._rate_limit_state = _RateLimitState()
 
         # Use streaming API by default to support large context windows (Anthropic requires streaming
         # for operations that may take > 10 minutes, e.g. with 300k+ token contexts)
@@ -1193,6 +1284,47 @@ class AnthropicProvider:
                     },
                 )
 
+        # Pre-emptive throttle check: if we're running low on any rate limit
+        # dimension, inject a delay and warn the user before hitting a 429.
+        if self._throttle_threshold > 0:
+            ratio, dimension, remaining, limit, reset_ts = (
+                self._rate_limit_state.most_constrained_ratio()
+            )
+            if ratio < self._throttle_threshold and remaining is not None:
+                # Calculate delay: use reset timestamp if available, else fallback
+                delay = self._throttle_delay
+                if reset_ts:
+                    try:
+                        from datetime import datetime, timezone
+
+                        reset_time = datetime.fromisoformat(
+                            reset_ts.replace("Z", "+00:00")
+                        )
+                        seconds_until_reset = (
+                            reset_time - datetime.now(timezone.utc)
+                        ).total_seconds()
+                        if seconds_until_reset > 0:
+                            delay = min(seconds_until_reset, 60.0)  # Cap at 60s
+                    except (ValueError, TypeError):
+                        pass  # Fall back to default delay
+
+                # Emit throttle event so CLI can warn the user
+                if self.coordinator and hasattr(self.coordinator, "hooks"):
+                    await self.coordinator.hooks.emit(
+                        PROVIDER_THROTTLE,
+                        {
+                            "provider": "anthropic",
+                            "model": params["model"],
+                            "reason": f"{dimension}_low",
+                            "dimension": dimension,
+                            "remaining": remaining,
+                            "limit": limit,
+                            "delay": delay,
+                        },
+                    )
+
+                await asyncio.sleep(delay)
+
         try:
             response = await retry_with_backoff(
                 _do_complete,
@@ -1207,6 +1339,8 @@ class AnthropicProvider:
 
             # Log rate limit status if available
             rate_limit_info = captured_rate_limit_info
+            # Update throttle state for next request's pre-emptive check
+            self._rate_limit_state.update_from_headers(rate_limit_info)
             if rate_limit_info:
                 tokens_remaining = rate_limit_info.get("tokens_remaining")
                 tokens_limit = rate_limit_info.get("tokens_limit")
