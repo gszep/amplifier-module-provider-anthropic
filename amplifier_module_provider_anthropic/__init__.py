@@ -619,9 +619,12 @@ class AnthropicProvider:
     ) -> dict[str, Any]:
         """Extract rate limit information from response headers.
 
-        Anthropic returns rate limit headers on every response:
-        - anthropic-ratelimit-requests-limit/remaining/reset
-        - anthropic-ratelimit-tokens-limit/remaining/reset
+        Anthropic returns rate limit headers on every response across
+        multiple dimensions:
+        - anthropic-ratelimit-requests-{limit,remaining,reset}
+        - anthropic-ratelimit-tokens-{limit,remaining,reset}
+        - anthropic-ratelimit-input-tokens-{limit,remaining,reset}
+        - anthropic-ratelimit-output-tokens-{limit,remaining,reset}
         - retry-after (on 429 errors)
 
         Args:
@@ -633,7 +636,7 @@ class AnthropicProvider:
         if not headers:
             return {}
 
-        # Helper to safely get header values
+        # Helper to safely get integer header values
         def get_int(key: str) -> int | None:
             val = headers.get(key)
             if val is not None:
@@ -643,23 +646,58 @@ class AnthropicProvider:
                     pass
             return None
 
+        # Helper to safely get non-empty string header values (for reset timestamps)
+        def get_str(key: str) -> str | None:
+            val = headers.get(key)
+            if val is not None and val != "":
+                return str(val)
+            return None
+
         info: dict[str, Any] = {}
 
         # Request limits
         requests_remaining = get_int("anthropic-ratelimit-requests-remaining")
         requests_limit = get_int("anthropic-ratelimit-requests-limit")
+        requests_reset = get_str("anthropic-ratelimit-requests-reset")
         if requests_remaining is not None:
             info["requests_remaining"] = requests_remaining
         if requests_limit is not None:
             info["requests_limit"] = requests_limit
+        if requests_reset is not None:
+            info["requests_reset"] = requests_reset
 
-        # Token limits
+        # Token limits (aggregate)
         tokens_remaining = get_int("anthropic-ratelimit-tokens-remaining")
         tokens_limit = get_int("anthropic-ratelimit-tokens-limit")
+        tokens_reset = get_str("anthropic-ratelimit-tokens-reset")
         if tokens_remaining is not None:
             info["tokens_remaining"] = tokens_remaining
         if tokens_limit is not None:
             info["tokens_limit"] = tokens_limit
+        if tokens_reset is not None:
+            info["tokens_reset"] = tokens_reset
+
+        # Input token limits (dimension-specific)
+        input_tokens_remaining = get_int("anthropic-ratelimit-input-tokens-remaining")
+        input_tokens_limit = get_int("anthropic-ratelimit-input-tokens-limit")
+        input_tokens_reset = get_str("anthropic-ratelimit-input-tokens-reset")
+        if input_tokens_remaining is not None:
+            info["input_tokens_remaining"] = input_tokens_remaining
+        if input_tokens_limit is not None:
+            info["input_tokens_limit"] = input_tokens_limit
+        if input_tokens_reset is not None:
+            info["input_tokens_reset"] = input_tokens_reset
+
+        # Output token limits (dimension-specific)
+        output_tokens_remaining = get_int("anthropic-ratelimit-output-tokens-remaining")
+        output_tokens_limit = get_int("anthropic-ratelimit-output-tokens-limit")
+        output_tokens_reset = get_str("anthropic-ratelimit-output-tokens-reset")
+        if output_tokens_remaining is not None:
+            info["output_tokens_remaining"] = output_tokens_remaining
+        if output_tokens_limit is not None:
+            info["output_tokens_limit"] = output_tokens_limit
+        if output_tokens_reset is not None:
+            info["output_tokens_reset"] = output_tokens_reset
 
         # Retry-after (typically only on 429)
         if retry_after := headers.get("retry-after"):
