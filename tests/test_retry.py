@@ -3,7 +3,7 @@
 Verifies:
 - Retryable errors (RateLimitError, ProviderUnavailableError, LLMTimeoutError) are retried
 - Non-retryable errors (AuthenticationError) raise immediately
-- Fail-fast when retry_after > max_retry_delay
+- retry_after > max_retry_delay still retries (server knows best)
 - Event name is provider:retry (not anthropic:rate_limit_retry)
 - Final failure raises kernel error type (not RuntimeError)
 - Existing backoff/jitter behavior preserved
@@ -191,20 +191,63 @@ class TestNoRetryOnNonRetryable:
         assert provider.client.messages.with_raw_response.create.await_count == 1
 
 
-class TestFailFastRetryAfterExceedsMax:
-    def test_retry_after_exceeds_max_raises_immediately(self):
-        """If retry_after > max_retry_delay, raise immediately instead of waiting."""
+class TestRetryAfterExceedsMaxDelay:
+    """retry_after > max_delay should still be retried (server knows best)."""
+
+    @patch("asyncio.sleep", new_callable=AsyncMock)
+    def test_retry_after_exceeds_max_delay_still_retries(self, mock_sleep):
+        """If retry_after > max_retry_delay, the error should still be retryable.
+
+        The server-requested wait should be honored regardless of max_delay.
+        max_delay only caps the *calculated* exponential backoff, not server hints.
+        """
         provider = _make_provider(max_retries=5, max_retry_delay=60.0)
+        dummy = DummyResponse()
+
+        raw_mock = MagicMock()
+        raw_mock.parse.return_value = dummy
+        raw_mock.headers = {}
+
+        # First call: 429 with retry_after=120 (exceeds max_delay=60).
+        # Second call: success.
         provider.client.messages.with_raw_response.create = AsyncMock(
-            side_effect=_make_sdk_rate_limit_error(retry_after=120.0)
+            side_effect=[
+                _make_sdk_rate_limit_error(retry_after=120.0),
+                raw_mock,
+            ]
         )
 
-        with pytest.raises(KernelRateLimitError) as exc_info:
-            asyncio.run(provider.complete(_simple_request()))
+        result = asyncio.run(provider.complete(_simple_request()))
+        assert result is not None
+        # Called twice: first attempt hit 429, retried, second succeeded
+        assert provider.client.messages.with_raw_response.create.await_count == 2
 
-        # Only called once — fail-fast, no retry
-        assert provider.client.messages.with_raw_response.create.await_count == 1
-        assert exc_info.value.retry_after == 120.0
+    @patch("asyncio.sleep", new_callable=AsyncMock)
+    def test_retry_after_exceeds_max_delay_honors_server_wait(self, mock_sleep):
+        """The sleep duration should use the server's retry_after value, not max_delay."""
+        provider = _make_provider(max_retries=5, max_retry_delay=60.0)
+        dummy = DummyResponse()
+
+        raw_mock = MagicMock()
+        raw_mock.parse.return_value = dummy
+        raw_mock.headers = {}
+
+        provider.client.messages.with_raw_response.create = AsyncMock(
+            side_effect=[
+                _make_sdk_rate_limit_error(retry_after=120.0),
+                raw_mock,
+            ]
+        )
+
+        asyncio.run(provider.complete(_simple_request()))
+
+        # The sleep should be >= 120 (the server-requested retry_after),
+        # not capped at 60 (max_delay)
+        assert mock_sleep.await_count >= 1
+        first_sleep = mock_sleep.await_args_list[0].args[0]
+        assert first_sleep >= 120.0, (
+            f"Expected sleep >= 120.0 (server retry_after), got {first_sleep}"
+        )
 
 
 class TestRetryEventEmission:

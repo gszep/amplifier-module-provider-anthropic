@@ -1096,19 +1096,11 @@ class AnthropicProvider:
             except AnthropicRateLimitError as e:
                 rate_info = self._parse_rate_limit_info(e)
                 retry_after = rate_info.get("retry_after_seconds")
-                # Fail-fast: if retry_after exceeds max_delay, mark non-retryable
-                # so retry_with_backoff raises immediately instead of sleeping.
-                retryable = True
-                if (
-                    retry_after is not None
-                    and retry_after > self._retry_config.max_delay
-                ):
-                    retryable = False
                 raise KernelRateLimitError(
                     str(e),
                     provider="anthropic",
                     status_code=429,
-                    retryable=retryable,
+                    retryable=True,
                     retry_after=retry_after,
                 ) from e
 
