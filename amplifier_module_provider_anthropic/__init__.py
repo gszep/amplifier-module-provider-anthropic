@@ -1069,6 +1069,7 @@ class AnthropicProvider:
                 raise KernelRateLimitError(
                     str(e),
                     provider="anthropic",
+                    model=params["model"],
                     status_code=429,
                     retryable=retryable,
                     retry_after=retry_after,
@@ -1078,6 +1079,7 @@ class AnthropicProvider:
                 raise KernelAuthenticationError(
                     str(e),
                     provider="anthropic",
+                    model=params["model"],
                     status_code=getattr(e, "status_code", 401),
                 ) from e
 
@@ -1087,18 +1089,21 @@ class AnthropicProvider:
                     raise KernelContextLengthError(
                         str(e),
                         provider="anthropic",
+                        model=params["model"],
                         status_code=getattr(e, "status_code", 400),
                     ) from e
                 elif "content filter" in msg or "safety" in msg or "blocked" in msg:
                     raise KernelContentFilterError(
                         str(e),
                         provider="anthropic",
+                        model=params["model"],
                         status_code=getattr(e, "status_code", 400),
                     ) from e
                 else:
                     raise KernelInvalidRequestError(
                         str(e),
                         provider="anthropic",
+                        model=params["model"],
                         status_code=getattr(e, "status_code", 400),
                     ) from e
 
@@ -1108,24 +1113,28 @@ class AnthropicProvider:
                     raise KernelAccessDeniedError(
                         str(e),
                         provider="anthropic",
+                        model=params["model"],
                         status_code=403,
                     ) from e
                 if status == 404:
                     raise KernelNotFoundError(
                         str(e),
                         provider="anthropic",
+                        model=params["model"],
                         status_code=404,
                     ) from e
                 if status >= 500:
                     raise KernelProviderUnavailableError(
                         str(e),
                         provider="anthropic",
+                        model=params["model"],
                         status_code=status,
                         retryable=True,
                     ) from e
                 raise KernelLLMError(
                     str(e),
                     provider="anthropic",
+                    model=params["model"],
                     status_code=status,
                     retryable=False,
                 ) from e
@@ -1134,6 +1143,7 @@ class AnthropicProvider:
                 raise KernelLLMTimeoutError(
                     f"Request timed out after {self.timeout}s",
                     provider="anthropic",
+                    model=params["model"],
                     retryable=True,
                 ) from e
 
@@ -1144,6 +1154,7 @@ class AnthropicProvider:
                 raise KernelLLMError(
                     str(e) or f"{type(e).__name__}: (no message)",
                     provider="anthropic",
+                    model=params["model"],
                     retryable=True,
                 ) from e
 

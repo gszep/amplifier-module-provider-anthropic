@@ -14,12 +14,14 @@ import pytest
 
 from amplifier_core import ModuleCoordinator
 from amplifier_core.llm_errors import (
+    AccessDeniedError as KernelAccessDeniedError,
     AuthenticationError as KernelAuthenticationError,
     ContentFilterError as KernelContentFilterError,
     ContextLengthError as KernelContextLengthError,
     InvalidRequestError as KernelInvalidRequestError,
     LLMError as KernelLLMError,
     LLMTimeoutError as KernelLLMTimeoutError,
+    NotFoundError as KernelNotFoundError,
     ProviderUnavailableError as KernelProviderUnavailableError,
     RateLimitError as KernelRateLimitError,
 )
@@ -320,3 +322,173 @@ class TestCauseChainPreservation:
             assert exc_info.value.__cause__ is sdk_error, (
                 f"{sdk_cls.__name__} → {kernel_cls.__name__}: __cause__ not preserved"
             )
+
+
+class TestModelPassthrough:
+    """Verify that .model is set on all kernel errors raised by _do_complete()."""
+
+    EXPECTED_MODEL = "claude-sonnet-4-5"  # default_model from _make_provider()
+
+    def test_rate_limit_error_includes_model(self):
+        provider = _make_provider()
+        sdk_error = _make_anthropic_error(
+            anthropic.RateLimitError, "rate limited", status_code=429
+        )
+        sdk_error.response.headers = {}
+        provider.client.messages.with_raw_response.create = AsyncMock(
+            side_effect=sdk_error
+        )
+
+        with pytest.raises(KernelRateLimitError) as exc_info:
+            asyncio.run(provider.complete(_simple_request()))
+
+        assert exc_info.value.model == self.EXPECTED_MODEL
+
+    def test_authentication_error_includes_model(self):
+        provider = _make_provider()
+        sdk_error = _make_anthropic_error(
+            anthropic.AuthenticationError, "invalid key", status_code=401
+        )
+        provider.client.messages.with_raw_response.create = AsyncMock(
+            side_effect=sdk_error
+        )
+
+        with pytest.raises(KernelAuthenticationError) as exc_info:
+            asyncio.run(provider.complete(_simple_request()))
+
+        assert exc_info.value.model == self.EXPECTED_MODEL
+
+    def test_context_length_error_includes_model(self):
+        provider = _make_provider()
+        sdk_error = _make_anthropic_error(
+            anthropic.BadRequestError,
+            "prompt is too long: context length exceeded",
+            status_code=400,
+        )
+        provider.client.messages.with_raw_response.create = AsyncMock(
+            side_effect=sdk_error
+        )
+
+        with pytest.raises(KernelContextLengthError) as exc_info:
+            asyncio.run(provider.complete(_simple_request()))
+
+        assert exc_info.value.model == self.EXPECTED_MODEL
+
+    def test_content_filter_error_includes_model(self):
+        provider = _make_provider()
+        sdk_error = _make_anthropic_error(
+            anthropic.BadRequestError,
+            "content blocked by safety filter",
+            status_code=400,
+        )
+        provider.client.messages.with_raw_response.create = AsyncMock(
+            side_effect=sdk_error
+        )
+
+        with pytest.raises(KernelContentFilterError) as exc_info:
+            asyncio.run(provider.complete(_simple_request()))
+
+        assert exc_info.value.model == self.EXPECTED_MODEL
+
+    def test_bad_request_error_includes_model(self):
+        provider = _make_provider()
+        sdk_error = _make_anthropic_error(
+            anthropic.BadRequestError, "invalid model name", status_code=400
+        )
+        provider.client.messages.with_raw_response.create = AsyncMock(
+            side_effect=sdk_error
+        )
+
+        with pytest.raises(KernelInvalidRequestError) as exc_info:
+            asyncio.run(provider.complete(_simple_request()))
+
+        assert exc_info.value.model == self.EXPECTED_MODEL
+
+    def test_access_denied_error_includes_model(self):
+        provider = _make_provider()
+        mock_response = MagicMock()
+        mock_response.status_code = 403
+        mock_response.headers = {}
+        sdk_error = anthropic.APIStatusError(
+            "forbidden", response=mock_response, body=None
+        )
+        provider.client.messages.with_raw_response.create = AsyncMock(
+            side_effect=sdk_error
+        )
+
+        with pytest.raises(KernelAccessDeniedError) as exc_info:
+            asyncio.run(provider.complete(_simple_request()))
+
+        assert exc_info.value.model == self.EXPECTED_MODEL
+
+    def test_not_found_error_includes_model(self):
+        provider = _make_provider()
+        mock_response = MagicMock()
+        mock_response.status_code = 404
+        mock_response.headers = {}
+        sdk_error = anthropic.APIStatusError(
+            "not found", response=mock_response, body=None
+        )
+        provider.client.messages.with_raw_response.create = AsyncMock(
+            side_effect=sdk_error
+        )
+
+        with pytest.raises(KernelNotFoundError) as exc_info:
+            asyncio.run(provider.complete(_simple_request()))
+
+        assert exc_info.value.model == self.EXPECTED_MODEL
+
+    def test_provider_unavailable_error_includes_model(self):
+        provider = _make_provider()
+        sdk_error = _make_anthropic_error(
+            anthropic.InternalServerError,
+            "internal server error",
+            status_code=500,
+        )
+        provider.client.messages.with_raw_response.create = AsyncMock(
+            side_effect=sdk_error
+        )
+
+        with pytest.raises(KernelProviderUnavailableError) as exc_info:
+            asyncio.run(provider.complete(_simple_request()))
+
+        assert exc_info.value.model == self.EXPECTED_MODEL
+
+    def test_generic_api_status_error_includes_model(self):
+        provider = _make_provider()
+        mock_response = MagicMock()
+        mock_response.status_code = 418
+        mock_response.headers = {}
+        sdk_error = anthropic.APIStatusError(
+            "I'm a teapot", response=mock_response, body=None
+        )
+        provider.client.messages.with_raw_response.create = AsyncMock(
+            side_effect=sdk_error
+        )
+
+        with pytest.raises(KernelLLMError) as exc_info:
+            asyncio.run(provider.complete(_simple_request()))
+
+        assert exc_info.value.model == self.EXPECTED_MODEL
+
+    def test_timeout_error_includes_model(self):
+        provider = _make_provider()
+        provider.client.messages.with_raw_response.create = AsyncMock(
+            side_effect=asyncio.TimeoutError()
+        )
+
+        with pytest.raises(KernelLLMTimeoutError) as exc_info:
+            asyncio.run(provider.complete(_simple_request()))
+
+        assert exc_info.value.model == self.EXPECTED_MODEL
+
+    def test_generic_exception_includes_model(self):
+        provider = _make_provider()
+        provider.client.messages.with_raw_response.create = AsyncMock(
+            side_effect=RuntimeError("something unexpected")
+        )
+
+        with pytest.raises(KernelLLMError) as exc_info:
+            asyncio.run(provider.complete(_simple_request()))
+
+        assert exc_info.value.model == self.EXPECTED_MODEL
