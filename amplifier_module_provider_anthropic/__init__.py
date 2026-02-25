@@ -1557,6 +1557,21 @@ class AnthropicProvider:
                     tc_id = tc.get("id") or tc.get("tool_call_id")
                     if tc_id:
                         valid_tool_use_ids.add(tc_id)
+            # ALSO scan content blocks for tool_use/tool_call entries.
+            # On session resume, synthetic tool results are injected by complete() before
+            # _convert_messages() runs. If the content blocks contain tool_use IDs that
+            # don't appear in tool_calls (format mismatch), the defensive filter at line
+            # ~1585 drops the synthetic results as "orphaned", causing a 400 from Anthropic.
+            # Scanning content blocks here makes the valid-ID set robust to any such mismatch.
+            if msg.get("role") == "assistant":
+                content = msg.get("content")
+                if isinstance(content, list):
+                    for block in content:
+                        if isinstance(block, dict):
+                            if block.get("type") == "tool_use" and block.get("id"):
+                                valid_tool_use_ids.add(block["id"])
+                            elif block.get("type") == "tool_call" and block.get("id"):
+                                valid_tool_use_ids.add(block["id"])
 
         anthropic_messages = []
         i = 0
