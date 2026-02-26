@@ -232,6 +232,57 @@ class TestBadRequestErrorUsesBodyJson:
 
         assert json.dumps(body) == str(exc_info.value)
 
+    def test_context_length_error_falls_back_to_str_when_body_none(self):
+        provider = _make_provider()
+        sdk_error = _make_anthropic_error_with_body(
+            anthropic.BadRequestError,
+            "prompt is too long: context length exceeded",
+            status_code=400,
+            body=None,
+        )
+        provider.client.messages.with_raw_response.create = AsyncMock(
+            side_effect=sdk_error
+        )
+
+        with pytest.raises(KernelContextLengthError) as exc_info:
+            asyncio.run(provider.complete(_simple_request()))
+
+        assert "context length exceeded" in str(exc_info.value)
+
+    def test_content_filter_error_falls_back_to_str_when_body_none(self):
+        provider = _make_provider()
+        sdk_error = _make_anthropic_error_with_body(
+            anthropic.BadRequestError,
+            "content blocked by safety filter",
+            status_code=400,
+            body=None,
+        )
+        provider.client.messages.with_raw_response.create = AsyncMock(
+            side_effect=sdk_error
+        )
+
+        with pytest.raises(KernelContentFilterError) as exc_info:
+            asyncio.run(provider.complete(_simple_request()))
+
+        assert "content blocked by safety filter" in str(exc_info.value)
+
+    def test_invalid_request_error_falls_back_to_str_when_body_none(self):
+        provider = _make_provider()
+        sdk_error = _make_anthropic_error_with_body(
+            anthropic.BadRequestError,
+            "invalid model name",
+            status_code=400,
+            body=None,
+        )
+        provider.client.messages.with_raw_response.create = AsyncMock(
+            side_effect=sdk_error
+        )
+
+        with pytest.raises(KernelInvalidRequestError) as exc_info:
+            asyncio.run(provider.complete(_simple_request()))
+
+        assert "invalid model name" in str(exc_info.value)
+
     def test_keyword_matching_still_works_with_body(self):
         """Keyword matching must still use str(e).lower(), not body JSON."""
         provider = _make_provider()
@@ -317,6 +368,74 @@ class TestAPIStatusErrorUsesBodyJson:
             asyncio.run(provider.complete(_simple_request()))
 
         assert json.dumps(body) == str(exc_info.value)
+
+    def test_403_access_denied_falls_back_to_str_when_body_none(self):
+        provider = _make_provider()
+        mock_response = MagicMock()
+        mock_response.status_code = 403
+        mock_response.headers = {}
+        sdk_error = anthropic.APIStatusError(
+            "forbidden", response=mock_response, body=None
+        )
+        provider.client.messages.with_raw_response.create = AsyncMock(
+            side_effect=sdk_error
+        )
+
+        with pytest.raises(KernelAccessDeniedError) as exc_info:
+            asyncio.run(provider.complete(_simple_request()))
+
+        assert "forbidden" in str(exc_info.value)
+
+    def test_404_not_found_falls_back_to_str_when_body_none(self):
+        provider = _make_provider()
+        mock_response = MagicMock()
+        mock_response.status_code = 404
+        mock_response.headers = {}
+        sdk_error = anthropic.APIStatusError(
+            "not found", response=mock_response, body=None
+        )
+        provider.client.messages.with_raw_response.create = AsyncMock(
+            side_effect=sdk_error
+        )
+
+        with pytest.raises(KernelNotFoundError) as exc_info:
+            asyncio.run(provider.complete(_simple_request()))
+
+        assert "not found" in str(exc_info.value)
+
+    def test_5xx_provider_unavailable_falls_back_to_str_when_body_none(self):
+        provider = _make_provider()
+        sdk_error = _make_anthropic_error_with_body(
+            anthropic.InternalServerError,
+            "internal server error",
+            status_code=500,
+            body=None,
+        )
+        provider.client.messages.with_raw_response.create = AsyncMock(
+            side_effect=sdk_error
+        )
+
+        with pytest.raises(KernelProviderUnavailableError) as exc_info:
+            asyncio.run(provider.complete(_simple_request()))
+
+        assert "internal server error" in str(exc_info.value)
+
+    def test_other_status_falls_back_to_str_when_body_none(self):
+        provider = _make_provider()
+        mock_response = MagicMock()
+        mock_response.status_code = 418
+        mock_response.headers = {}
+        sdk_error = anthropic.APIStatusError(
+            "I'm a teapot", response=mock_response, body=None
+        )
+        provider.client.messages.with_raw_response.create = AsyncMock(
+            side_effect=sdk_error
+        )
+
+        with pytest.raises(KernelLLMError) as exc_info:
+            asyncio.run(provider.complete(_simple_request()))
+
+        assert "I'm a teapot" in str(exc_info.value)
 
     def test_other_status_uses_json_body(self):
         provider = _make_provider()
