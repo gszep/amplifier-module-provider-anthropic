@@ -84,7 +84,6 @@ class TestRateLimitErrorUsesBodyJson:
         sdk_error = _make_anthropic_error_with_body(
             anthropic.RateLimitError, "rate limited", status_code=429, body=body
         )
-        sdk_error.response.headers = {}  # type: ignore[attr-defined]
         provider.client.messages.with_raw_response.create = AsyncMock(
             side_effect=sdk_error
         )
@@ -100,7 +99,6 @@ class TestRateLimitErrorUsesBodyJson:
         sdk_error = _make_anthropic_error_with_body(
             anthropic.RateLimitError, "rate limited", status_code=429, body=None
         )
-        sdk_error.response.headers = {}  # type: ignore[attr-defined]
         provider.client.messages.with_raw_response.create = AsyncMock(
             side_effect=sdk_error
         )
@@ -315,11 +313,8 @@ class TestAPIStatusErrorUsesBodyJson:
     def test_403_access_denied_uses_json_body(self):
         provider = _make_provider()
         body = {"type": "error", "error": {"type": "forbidden", "message": "forbidden"}}
-        mock_response = MagicMock()
-        mock_response.status_code = 403
-        mock_response.headers = {}
-        sdk_error = anthropic.APIStatusError(
-            "forbidden", response=mock_response, body=body
+        sdk_error = _make_anthropic_error_with_body(
+            anthropic.APIStatusError, "forbidden", status_code=403, body=body
         )
         provider.client.messages.with_raw_response.create = AsyncMock(
             side_effect=sdk_error
@@ -333,11 +328,8 @@ class TestAPIStatusErrorUsesBodyJson:
     def test_404_not_found_uses_json_body(self):
         provider = _make_provider()
         body = {"type": "error", "error": {"type": "not_found", "message": "not found"}}
-        mock_response = MagicMock()
-        mock_response.status_code = 404
-        mock_response.headers = {}
-        sdk_error = anthropic.APIStatusError(
-            "not found", response=mock_response, body=body
+        sdk_error = _make_anthropic_error_with_body(
+            anthropic.APIStatusError, "not found", status_code=404, body=body
         )
         provider.client.messages.with_raw_response.create = AsyncMock(
             side_effect=sdk_error
@@ -371,11 +363,8 @@ class TestAPIStatusErrorUsesBodyJson:
 
     def test_403_access_denied_falls_back_to_str_when_body_none(self):
         provider = _make_provider()
-        mock_response = MagicMock()
-        mock_response.status_code = 403
-        mock_response.headers = {}
-        sdk_error = anthropic.APIStatusError(
-            "forbidden", response=mock_response, body=None
+        sdk_error = _make_anthropic_error_with_body(
+            anthropic.APIStatusError, "forbidden", status_code=403, body=None
         )
         provider.client.messages.with_raw_response.create = AsyncMock(
             side_effect=sdk_error
@@ -388,11 +377,8 @@ class TestAPIStatusErrorUsesBodyJson:
 
     def test_404_not_found_falls_back_to_str_when_body_none(self):
         provider = _make_provider()
-        mock_response = MagicMock()
-        mock_response.status_code = 404
-        mock_response.headers = {}
-        sdk_error = anthropic.APIStatusError(
-            "not found", response=mock_response, body=None
+        sdk_error = _make_anthropic_error_with_body(
+            anthropic.APIStatusError, "not found", status_code=404, body=None
         )
         provider.client.messages.with_raw_response.create = AsyncMock(
             side_effect=sdk_error
@@ -422,11 +408,8 @@ class TestAPIStatusErrorUsesBodyJson:
 
     def test_other_status_falls_back_to_str_when_body_none(self):
         provider = _make_provider()
-        mock_response = MagicMock()
-        mock_response.status_code = 418
-        mock_response.headers = {}
-        sdk_error = anthropic.APIStatusError(
-            "I'm a teapot", response=mock_response, body=None
+        sdk_error = _make_anthropic_error_with_body(
+            anthropic.APIStatusError, "I'm a teapot", status_code=418, body=None
         )
         provider.client.messages.with_raw_response.create = AsyncMock(
             side_effect=sdk_error
@@ -440,11 +423,8 @@ class TestAPIStatusErrorUsesBodyJson:
     def test_other_status_uses_json_body(self):
         provider = _make_provider()
         body = {"type": "error", "error": {"type": "teapot", "message": "I'm a teapot"}}
-        mock_response = MagicMock()
-        mock_response.status_code = 418
-        mock_response.headers = {}
-        sdk_error = anthropic.APIStatusError(
-            "I'm a teapot", response=mock_response, body=body
+        sdk_error = _make_anthropic_error_with_body(
+            anthropic.APIStatusError, "I'm a teapot", status_code=418, body=body
         )
         provider.client.messages.with_raw_response.create = AsyncMock(
             side_effect=sdk_error
