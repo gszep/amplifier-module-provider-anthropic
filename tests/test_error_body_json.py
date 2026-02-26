@@ -70,19 +70,6 @@ def _make_anthropic_error_with_body(cls, message="error", status_code=400, body=
 
 
 # ---------------------------------------------------------------------------
-# The body dict we expect to see JSON-serialized in error messages
-# ---------------------------------------------------------------------------
-
-SAMPLE_BODY = {
-    "type": "error",
-    "error": {
-        "type": "rate_limit_error",
-        "message": "Number of request tokens has exceeded your daily rate limit",
-    },
-}
-
-
-# ---------------------------------------------------------------------------
 # Block 1: RateLimitError — uses json.dumps(body) when body present
 # ---------------------------------------------------------------------------
 
@@ -148,6 +135,21 @@ class TestAuthenticationErrorUsesBodyJson:
             asyncio.run(provider.complete(_simple_request()))
 
         assert json.dumps(body) == str(exc_info.value)
+
+    def test_error_message_falls_back_to_str_when_body_none(self):
+        provider = _make_provider()
+        sdk_error = _make_anthropic_error_with_body(
+            anthropic.AuthenticationError, "invalid key", status_code=401, body=None
+        )
+        provider.client.messages.with_raw_response.create = AsyncMock(
+            side_effect=sdk_error
+        )
+
+        with pytest.raises(KernelAuthenticationError) as exc_info:
+            asyncio.run(provider.complete(_simple_request()))
+
+        # Falls back to str(e) when body is None
+        assert "invalid key" in str(exc_info.value)
 
 
 # ---------------------------------------------------------------------------
