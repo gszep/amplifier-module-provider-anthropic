@@ -10,6 +10,7 @@ __all__ = ["mount", "AnthropicProvider"]
 __amplifier_module_type__ = "provider"
 
 import asyncio
+import json
 import logging
 import os
 import re
@@ -1191,8 +1192,10 @@ class AnthropicProvider:
             except AnthropicRateLimitError as e:
                 rate_info = self._parse_rate_limit_info(e)
                 retry_after = rate_info.get("retry_after_seconds")
+                body = getattr(e, "body", None)
+                msg = json.dumps(body) if body is not None else str(e)
                 raise KernelRateLimitError(
-                    str(e),
+                    msg,
                     provider="anthropic",
                     model=params["model"],
                     status_code=429,
@@ -1201,32 +1204,40 @@ class AnthropicProvider:
                 ) from e
 
             except AnthropicAuthenticationError as e:
+                body = getattr(e, "body", None)
+                msg = json.dumps(body) if body is not None else str(e)
                 raise KernelAuthenticationError(
-                    str(e),
+                    msg,
                     provider="anthropic",
                     model=params["model"],
                     status_code=getattr(e, "status_code", 401),
                 ) from e
 
             except AnthropicBadRequestError as e:
-                msg = str(e).lower()
-                if "context length" in msg or "too many tokens" in msg:
+                raw_msg = str(e).lower()
+                body = getattr(e, "body", None)
+                error_msg = json.dumps(body) if body is not None else str(e)
+                if "context length" in raw_msg or "too many tokens" in raw_msg:
                     raise KernelContextLengthError(
-                        str(e),
+                        error_msg,
                         provider="anthropic",
                         model=params["model"],
                         status_code=getattr(e, "status_code", 400),
                     ) from e
-                elif "content filter" in msg or "safety" in msg or "blocked" in msg:
+                elif (
+                    "content filter" in raw_msg
+                    or "safety" in raw_msg
+                    or "blocked" in raw_msg
+                ):
                     raise KernelContentFilterError(
-                        str(e),
+                        error_msg,
                         provider="anthropic",
                         model=params["model"],
                         status_code=getattr(e, "status_code", 400),
                     ) from e
                 else:
                     raise KernelInvalidRequestError(
-                        str(e),
+                        error_msg,
                         provider="anthropic",
                         model=params["model"],
                         status_code=getattr(e, "status_code", 400),
@@ -1234,30 +1245,32 @@ class AnthropicProvider:
 
             except AnthropicAPIStatusError as e:
                 status = getattr(e, "status_code", 500)
+                body = getattr(e, "body", None)
+                error_msg = json.dumps(body) if body is not None else str(e)
                 if status == 403:
                     raise KernelAccessDeniedError(
-                        str(e),
+                        error_msg,
                         provider="anthropic",
                         model=params["model"],
                         status_code=403,
                     ) from e
                 if status == 404:
                     raise KernelNotFoundError(
-                        str(e),
+                        error_msg,
                         provider="anthropic",
                         model=params["model"],
                         status_code=404,
                     ) from e
                 if status >= 500:
                     raise KernelProviderUnavailableError(
-                        str(e),
+                        error_msg,
                         provider="anthropic",
                         model=params["model"],
                         status_code=status,
                         retryable=True,
                     ) from e
                 raise KernelLLMError(
-                    str(e),
+                    error_msg,
                     provider="anthropic",
                     model=params["model"],
                     status_code=status,
@@ -1276,8 +1289,14 @@ class AnthropicProvider:
                 raise  # Already translated, don't double-wrap
 
             except Exception as e:
+                body = getattr(e, "body", None)
+                error_msg = (
+                    json.dumps(body)
+                    if body is not None
+                    else (str(e) or f"{type(e).__name__}: (no message)")
+                )
                 raise KernelLLMError(
-                    str(e) or f"{type(e).__name__}: (no message)",
+                    error_msg,
                     provider="anthropic",
                     model=params["model"],
                     retryable=True,
