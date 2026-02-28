@@ -149,7 +149,9 @@ from anthropic import AsyncAnthropic
 from anthropic import AuthenticationError as AnthropicAuthenticationError
 from anthropic import BadRequestError as AnthropicBadRequestError
 from anthropic import RateLimitError as AnthropicRateLimitError
-from anthropic._exceptions import OverloadedError as AnthropicOverloadedError
+from anthropic._exceptions import (
+    OverloadedError as AnthropicOverloadedError,
+)  # Not exported in public API as of SDK v0.75.0
 
 logger = logging.getLogger(__name__)
 

@@ -11,7 +11,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import anthropic
 import pytest
-from anthropic._exceptions import OverloadedError as AnthropicOverloadedError
+from anthropic._exceptions import (
+    OverloadedError as AnthropicOverloadedError,
+)  # Not exported in public API as of SDK v0.75.0
 
 from amplifier_core import ModuleCoordinator
 from amplifier_core.llm_errors import (
