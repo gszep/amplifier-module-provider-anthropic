@@ -18,6 +18,26 @@ import pytest
 README_PATH = Path(__file__).parent.parent / "README.md"
 
 
+def _extract_section(content: str, heading: str) -> str:
+    """Extract content from a heading to the next heading of same or higher level."""
+    level = len(heading) - len(heading.lstrip("#"))
+    pattern = re.escape(heading)
+    match = re.search(pattern, content)
+    if not match:
+        pytest.fail(f"Heading '{heading}' not found in content")
+    start = match.start()
+
+    # Find next heading of same or higher level
+    rest = content[match.end() :]
+    next_heading = re.search(rf"^#{{{1},{level}}}\s", rest, re.MULTILINE)
+    if next_heading:
+        end = match.end() + next_heading.start()
+    else:
+        end = len(content)
+
+    return content[start:end]
+
+
 @pytest.fixture(scope="module")
 def readme_content():
     """Load README.md content once per module (shared across all 44 tests)."""
@@ -208,11 +228,13 @@ class TestBackoffFormula:
     def test_529_attempt_table(self, readme_content):
         """Must show 5 attempts for 529 with correct delays: 10s, 20s, 40s, 80s, 160s."""
         section = _extract_section(readme_content, "#### Backoff Formula")
-        assert "10s" in section or "10" in section
-        assert "20s" in section or "20" in section
-        assert "40s" in section or "40" in section
-        assert "80s" in section or "80" in section
-        assert "160s" in section or "160" in section
+        # Use row-level assertions (| 10s |) to avoid false positives from
+        # substrings (e.g., "10" matching inside "310").
+        assert "| 10s |" in section, "529 attempt table missing 10s delay"
+        assert "| 20s |" in section, "529 attempt table missing 20s delay"
+        assert "| 40s |" in section, "529 attempt table missing 40s delay"
+        assert "| 80s |" in section, "529 attempt table missing 80s delay"
+        assert "| 160s |" in section, "529 attempt table missing 160s delay"
 
     def test_total_time_noted(self, readme_content):
         """Must note total ~310s (~5 min)."""
@@ -329,23 +351,3 @@ class TestMarkdownRendering:
         idx_retry = readme_content.index("### Retry and Error Handling")
         idx_beta = readme_content.index("## Beta Headers")
         assert idx_retry < idx_beta
-
-
-def _extract_section(content: str, heading: str) -> str:
-    """Extract content from a heading to the next heading of same or higher level."""
-    level = len(heading) - len(heading.lstrip("#"))
-    pattern = re.escape(heading)
-    match = re.search(pattern, content)
-    if not match:
-        pytest.fail(f"Heading '{heading}' not found in content")
-    start = match.start()
-
-    # Find next heading of same or higher level
-    rest = content[match.end() :]
-    next_heading = re.search(rf"^#{{{1},{level}}}\s", rest, re.MULTILINE)
-    if next_heading:
-        end = match.end() + next_heading.start()
-    else:
-        end = len(content)
-
-    return content[start:end]
