@@ -85,7 +85,9 @@ def _tolerant_parse_message(data: dict) -> claude_agent_sdk.types.Message:
     except _MessageParseError as exc:
         if "Unknown message type" in str(exc):
             msg_type = data.get("type", "?")
-            logger.info("[PROVIDER] Skipping unrecognized SDK message type: %s", msg_type)
+            logger.info(
+                "[PROVIDER] Skipping unrecognized SDK message type: %s", msg_type
+            )
             return claude_agent_sdk.types.StreamEvent(
                 uuid=data.get("uuid", ""),
                 session_id=data.get("session_id", ""),
@@ -375,6 +377,22 @@ class ClaudeProvider:
             )
 
         if family == "haiku":
+            # Haiku 4.5+ supports extended thinking (no adaptive thinking, no 1M context)
+            is_45_plus = not version_known or (major, minor) >= (4, 5)
+            if is_45_plus:
+                return ModelCapabilities(
+                    family="haiku",
+                    supports_thinking=True,
+                    supports_adaptive_thinking=False,
+                    default_thinking_budget=32000,
+                    capability_tags=(
+                        "tools",
+                        "thinking",
+                        "streaming",
+                        "json_mode",
+                        "fast",
+                    ),
+                )
             return ModelCapabilities(
                 family="haiku",
                 capability_tags=("tools", "streaming", "json_mode", "fast"),
@@ -998,9 +1016,10 @@ class ClaudeProvider:
 
         valid_calls = []
         for tc in response.tool_calls:
-            # Skip tool calls with no arguments or empty dict
-            if not tc.arguments:
-                logger.debug(f"Filtering out tool '{tc.name}' with empty arguments")
+            # Skip tool calls with truly missing arguments (None),
+            # but preserve empty dict {} which is valid for no-arg tools
+            if tc.arguments is None:
+                logger.debug(f"Filtering out tool '{tc.name}' with missing arguments")
                 continue
             valid_calls.append(tc)
 
