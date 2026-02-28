@@ -89,66 +89,89 @@ class TestErrorTranslationTable:
 
     def test_rate_limit_error_row(self, readme_content):
         """RateLimitError -> RateLimitError, 429, retryable."""
-        assert "RateLimitError" in readme_content
-        assert "429" in readme_content
+        section = _extract_section(readme_content, "#### Error Translation")
+        assert "RateLimitError" in section
+        assert "429" in section
 
     def test_overloaded_error_row(self, readme_content):
         """OverloadedError -> ProviderUnavailableError, 529, 10x backoff."""
-        assert "OverloadedError" in readme_content
-        assert "ProviderUnavailableError" in readme_content
-        assert "529" in readme_content
+        section = _extract_section(readme_content, "#### Error Translation")
+        assert "OverloadedError" in section
+        assert "ProviderUnavailableError" in section
+        assert "529" in section
 
     def test_internal_server_error_row(self, readme_content):
         """InternalServerError/5xx -> ProviderUnavailableError."""
-        assert "InternalServerError" in readme_content
+        section = _extract_section(readme_content, "#### Error Translation")
+        assert "InternalServerError" in section
 
     def test_authentication_error_row(self, readme_content):
         """AuthenticationError -> AuthenticationError, 401, not retryable."""
-        assert "AuthenticationError" in readme_content
-        assert "401" in readme_content
+        section = _extract_section(readme_content, "#### Error Translation")
+        assert "AuthenticationError" in section
+        assert "401" in section
 
     def test_context_length_error_row(self, readme_content):
         """BadRequestError(context) -> ContextLengthError, 400."""
-        assert "ContextLengthError" in readme_content
+        section = _extract_section(readme_content, "#### Error Translation")
+        assert "ContextLengthError" in section
 
     def test_content_filter_error_row(self, readme_content):
         """BadRequestError(safety) -> ContentFilterError, 400."""
-        assert "ContentFilterError" in readme_content
+        section = _extract_section(readme_content, "#### Error Translation")
+        assert "ContentFilterError" in section
 
     def test_invalid_request_error_row(self, readme_content):
         """BadRequestError(other) -> InvalidRequestError, 400."""
-        assert "InvalidRequestError" in readme_content
+        section = _extract_section(readme_content, "#### Error Translation")
+        assert "InvalidRequestError" in section
 
     def test_access_denied_error_row(self, readme_content):
         """APIStatusError(403) -> AccessDeniedError, 403."""
-        assert "AccessDeniedError" in readme_content
-        assert "403" in readme_content
+        section = _extract_section(readme_content, "#### Error Translation")
+        assert "AccessDeniedError" in section
+        assert "403" in section
 
     def test_not_found_error_row(self, readme_content):
         """APIStatusError(404) -> NotFoundError, 404."""
-        assert "NotFoundError" in readme_content
-        assert "404" in readme_content
+        section = _extract_section(readme_content, "#### Error Translation")
+        assert "NotFoundError" in section
+        assert "404" in section
 
     def test_timeout_error_row(self, readme_content):
         """asyncio.TimeoutError -> LLMTimeoutError, retryable."""
-        assert "TimeoutError" in readme_content
-        assert "LLMTimeoutError" in readme_content
+        section = _extract_section(readme_content, "#### Error Translation")
+        assert "TimeoutError" in section
+        assert "LLMTimeoutError" in section
 
     def test_other_error_row(self, readme_content):
         """Other exceptions -> LLMError, retryable."""
-        assert "LLMError" in readme_content
+        section = _extract_section(readme_content, "#### Error Translation")
+        # Check for a table row containing "Other" and "LLMError" but not "LLMTimeoutError"
+        lines = section.split("\n")
+        other_rows = [line for line in lines if "Other" in line and "LLMError" in line]
+        assert other_rows, "No table row found with 'Other' and 'LLMError'"
+        # Ensure this isn't just the LLMTimeoutError row
+        assert any("LLMTimeoutError" not in row for row in other_rows), (
+            "Only found LLMTimeoutError rows, not the generic LLMError row"
+        )
 
     def test_cause_preservation_note(self, readme_content):
         """Must note that all errors preserve __cause__."""
-        assert "__cause__" in readme_content
+        section = _extract_section(readme_content, "#### Error Translation")
+        assert "__cause__" in section
 
     def test_table_has_markdown_format(self, readme_content):
-        """Error translation section should contain a markdown table."""
-        # Find content between Error Translation heading and next heading
+        """Error translation section should contain a well-formed markdown table."""
         section = _extract_section(readme_content, "#### Error Translation")
-        # Table rows have | separators
-        assert section.count("|") >= 24, (
-            "Table should have at least 12 data rows with pipes"
+        # Count lines that start with | and contain at least 4 | characters (table rows)
+        table_rows = [
+            line
+            for line in section.split("\n")
+            if line.strip().startswith("|") and line.count("|") >= 4
+        ]
+        assert len(table_rows) >= 12, (
+            f"Table should have at least 12 data rows, found {len(table_rows)}"
         )
 
 
