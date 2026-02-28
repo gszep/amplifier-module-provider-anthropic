@@ -15,6 +15,10 @@ from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import anthropic
+
+# Private API: OverloadedError is not publicly exported from the anthropic package
+# (i.e. `from anthropic import OverloadedError` raises ImportError).
+# This private import path is the only way to reference the 529 exception class.
 from anthropic._exceptions import OverloadedError as AnthropicOverloadedError
 import pytest
 
