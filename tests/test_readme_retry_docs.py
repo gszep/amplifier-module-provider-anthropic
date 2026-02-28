@@ -18,9 +18,9 @@ import pytest
 README_PATH = Path(__file__).parent.parent / "README.md"
 
 
-@pytest.fixture
+@pytest.fixture(scope="module")
 def readme_content():
-    """Load README.md content."""
+    """Load README.md content once per module (shared across all 44 tests)."""
     return README_PATH.read_text()
 
 
@@ -164,14 +164,16 @@ class TestErrorTranslationTable:
     def test_table_has_markdown_format(self, readme_content):
         """Error translation section should contain a well-formed markdown table."""
         section = _extract_section(readme_content, "#### Error Translation")
-        # Count lines that start with | and contain at least 4 | characters (table rows)
+        # Count lines that start with | and contain at least 4 | characters (table rows).
+        # Expects 14 total: 1 header + 1 separator + 12 data rows.
         table_rows = [
             line
             for line in section.split("\n")
             if line.strip().startswith("|") and line.count("|") >= 4
         ]
         assert len(table_rows) >= 12, (
-            f"Table should have at least 12 data rows, found {len(table_rows)}"
+            f"Table should have at least 12 rows (header + separator + 10 data), "
+            f"found {len(table_rows)}"
         )
 
 
@@ -288,11 +290,7 @@ class TestProviderRetryEvent:
 
     def test_event_fields(self, readme_content):
         """Must document all event fields."""
-        # Find the events section (after Retry Configuration)
-        idx = readme_content.find("provider:retry")
-        assert idx != -1
-        # Check nearby content for field names
-        nearby = readme_content[idx : idx + 1000]
+        section = _extract_section(readme_content, "### Retry and Error Handling")
         for field in [
             "provider",
             "model",
@@ -303,8 +301,8 @@ class TestProviderRetryEvent:
             "error_type",
             "error_message",
         ]:
-            assert field in nearby, (
-                f"Event field '{field}' not documented near provider:retry"
+            assert field in section, (
+                f"Event field '{field}' not documented in retry section"
             )
 
 
