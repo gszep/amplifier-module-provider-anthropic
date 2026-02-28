@@ -71,26 +71,88 @@ providers:
       default_model: claude-sonnet-4-5
 ```
 
-### Rate Limit Configuration
+### Retry and Error Handling
 
-The provider uses the Anthropic SDK's built-in retry mechanism for rate limit errors (429) and server errors (5xx). Configure retry behavior:
+The provider disables SDK built-in retries (`max_retries=0`) and manages retries itself via `amplifier_core.utils.retry.retry_with_backoff()`. This gives the provider full control over backoff timing, retry-after header honoring, and per-error-class delay scaling.
+
+#### Error Translation
+
+SDK exceptions are translated to kernel errors before the retry loop sees them. All translations preserve the original exception as `__cause__` for debugging.
+
+| SDK Exception | Condition | Kernel Error | Status | Retryable |
+| --- | --- | --- | --- | --- |
+| `RateLimitError` | 429 | `RateLimitError` | 429 | Yes |
+| `OverloadedError` | 529 | `ProviderUnavailableError` | 529 | Yes (10× backoff) |
+| `InternalServerError` | 5xx | `ProviderUnavailableError` | 5xx | Yes |
+| `AuthenticationError` | 401 | `AuthenticationError` | 401 | No |
+| `BadRequestError` | context length / too many tokens | `ContextLengthError` | 400 | No |
+| `BadRequestError` | safety / content filter / blocked | `ContentFilterError` | 400 | No |
+| `BadRequestError` | other | `InvalidRequestError` | 400 | No |
+| `APIStatusError` | 403 | `AccessDeniedError` | 403 | No |
+| `APIStatusError` | 404 | `NotFoundError` | 404 | No |
+| `APIStatusError` | other non-5xx | `LLMError` | — | No |
+| `asyncio.TimeoutError` | — | `LLMTimeoutError` | — | Yes |
+| Other | — | `LLMError` | — | Yes |
+
+#### Backoff Formula
+
+Each retry delay is computed as follows:
+
+```
+base_delay   = min_retry_delay × 2^(attempt - 1)
+capped_delay = min(base_delay, max_retry_delay)
+scaled_delay = capped_delay × delay_multiplier          # 1.0 for most errors, 10.0 for 529
+final_delay  = max(scaled_delay, retry_after)            # server retry-after as floor
+sleep        = final_delay ± (final_delay × jitter)      # randomised ± jitter fraction
+```
+
+**Example: 529 Overloaded (10× multiplier, defaults)**
+
+| Attempt | base_delay | capped | ×10 | Sleep |
+| --- | --- | --- | --- | --- |
+| 1 | 1s | 1s | 10s | 10s |
+| 2 | 2s | 2s | 20s | 20s |
+| 3 | 4s | 4s | 40s | 40s |
+| 4 | 8s | 8s | 80s | 80s |
+| 5 | 16s | 16s | 160s | 160s |
+
+Total wait ≈ 310s (~5 min) before the request is abandoned.
+
+#### Retry Configuration
 
 ```yaml
 providers:
   - module: provider-anthropic
     config:
-      max_retries: 5  # Number of retry attempts (default: 2)
+      max_retries: 5
+      min_retry_delay: 1.0
+      max_retry_delay: 60.0
+      retry_jitter: 0.2
+      overloaded_delay_multiplier: 10.0
 ```
 
-**Behavior:**
-- SDK automatically retries 429 (rate limit) and 5xx errors with exponential backoff
-- Default is 2 retries (SDK default)
-- Set to `0` to disable retries
-- When retries are exhausted, emits `anthropic:rate_limited` event with retry timing info
+| Key | Default | Description |
+| --- | --- | --- |
+| `max_retries` | `5` | Maximum retry attempts before giving up |
+| `min_retry_delay` | `1.0` | Base delay in seconds for the first retry |
+| `max_retry_delay` | `60.0` | Cap on the base delay (before multiplier) |
+| `retry_jitter` | `0.2` | Jitter fraction (0.0–1.0). Also accepts `true` (→ 0.2) or `false` (→ 0.0) for backward compatibility |
+| `overloaded_delay_multiplier` | `10.0` | Multiplier applied to delays for 529 Overloaded errors |
 
-**Events emitted on rate limit:**
-- `anthropic:rate_limited` - Detailed rate limit info including `retry_after_seconds`
-- `llm:response` with `status: "rate_limited"` - Standard error event
+#### Events
+
+A `provider:retry` event is emitted before each retry sleep with the following fields:
+
+| Field | Description |
+| --- | --- |
+| `provider` | Provider name (`"anthropic"`) |
+| `model` | Model being called |
+| `attempt` | Current retry attempt number |
+| `max_retries` | Configured maximum retries |
+| `delay` | Computed sleep duration in seconds |
+| `retry_after` | Server retry-after value (or `null`) |
+| `error_type` | Kernel error class name |
+| `error_message` | Error description |
 
 ## Beta Headers
 
