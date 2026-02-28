@@ -15,6 +15,7 @@ from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import anthropic
+from anthropic._exceptions import OverloadedError as AnthropicOverloadedError
 import pytest
 
 from amplifier_core import ModuleCoordinator
@@ -102,6 +103,18 @@ def _make_sdk_auth_error() -> anthropic.AuthenticationError:
     mock_response.status_code = 401
     mock_response.headers = {}
     return anthropic.AuthenticationError("bad key", response=mock_response, body=None)
+
+
+def _make_sdk_overloaded_error(
+    retry_after: float | None = None,
+) -> AnthropicOverloadedError:
+    mock_response = MagicMock()
+    mock_response.status_code = 529
+    headers: dict[str, str] = {}
+    if retry_after is not None:
+        headers["retry-after"] = str(retry_after)
+    mock_response.headers = headers
+    return AnthropicOverloadedError("overloaded", response=mock_response, body=None)
 
 
 # ---------------------------------------------------------------------------
@@ -367,3 +380,132 @@ class TestBackoffPattern:
         assert abs(delays[0] - 0.01) < 0.001
         assert abs(delays[1] - 0.02) < 0.001
         assert abs(delays[2] - 0.04) < 0.001
+
+
+class TestOverloadedRetryBehavior:
+    """Tests for 529 OverloadedError retry with multiplied backoff."""
+
+    @patch("asyncio.sleep", new_callable=AsyncMock)
+    def test_529_retried_then_succeeds(self, mock_sleep):
+        """529 on first call, success on second -> response returned."""
+        provider = _make_provider(max_retries=3)
+        dummy = DummyResponse()
+
+        raw_mock = MagicMock()
+        raw_mock.parse.return_value = dummy
+        raw_mock.headers = {}
+
+        provider.client.messages.with_raw_response.create = AsyncMock(
+            side_effect=[
+                _make_sdk_overloaded_error(),
+                raw_mock,
+            ]
+        )
+
+        result = asyncio.run(provider.complete(_simple_request()))
+        assert result is not None
+        assert provider.client.messages.with_raw_response.create.await_count == 2
+
+    @patch("asyncio.sleep", new_callable=AsyncMock)
+    def test_529_multiplied_backoff_delay(self, mock_sleep):
+        """First sleep == 0.1 (0.01 * 10x multiplier) with default overloaded_delay_multiplier."""
+        provider = _make_provider(max_retries=3)
+        dummy = DummyResponse()
+
+        raw_mock = MagicMock()
+        raw_mock.parse.return_value = dummy
+        raw_mock.headers = {}
+
+        provider.client.messages.with_raw_response.create = AsyncMock(
+            side_effect=[
+                _make_sdk_overloaded_error(),
+                raw_mock,
+            ]
+        )
+
+        asyncio.run(provider.complete(_simple_request()))
+
+        assert mock_sleep.await_count >= 1
+        first_sleep = mock_sleep.await_args_list[0].args[0]
+        # min_retry_delay=0.01 * 2^0 = 0.01, then * 10x multiplier = 0.1
+        assert abs(first_sleep - 0.1) < 0.001, (
+            f"Expected sleep ~0.1 (0.01 * 10x multiplier), got {first_sleep}"
+        )
+
+    @patch("asyncio.sleep", new_callable=AsyncMock)
+    def test_529_retry_after_header_honored(self, mock_sleep):
+        """529 with Retry-After: 5.0 -> first sleep >= 5.0 (server hint wins over multiplied 0.1)."""
+        provider = _make_provider(max_retries=3)
+        dummy = DummyResponse()
+
+        raw_mock = MagicMock()
+        raw_mock.parse.return_value = dummy
+        raw_mock.headers = {}
+
+        provider.client.messages.with_raw_response.create = AsyncMock(
+            side_effect=[
+                _make_sdk_overloaded_error(retry_after=5.0),
+                raw_mock,
+            ]
+        )
+
+        asyncio.run(provider.complete(_simple_request()))
+
+        assert mock_sleep.await_count >= 1
+        first_sleep = mock_sleep.await_args_list[0].args[0]
+        # Multiplied delay = 0.01 * 10 = 0.1, but retry_after=5.0 wins as floor
+        assert first_sleep >= 5.0, (
+            f"Expected sleep >= 5.0 (server retry-after hint), got {first_sleep}"
+        )
+
+    @patch("asyncio.sleep", new_callable=AsyncMock)
+    def test_529_exhausted_retries_raises(self, mock_sleep):
+        """max_retries=2, all 529s -> raises KernelProviderUnavailableError with status_code=529."""
+        provider = _make_provider(max_retries=2)
+        provider.client.messages.with_raw_response.create = AsyncMock(
+            side_effect=_make_sdk_overloaded_error()
+        )
+
+        with pytest.raises(KernelProviderUnavailableError) as exc_info:
+            asyncio.run(provider.complete(_simple_request()))
+
+        assert exc_info.value.status_code == 529
+        # 1 initial + 2 retries = 3 total calls
+        assert provider.client.messages.with_raw_response.create.await_count == 3
+
+    @patch("asyncio.sleep", new_callable=AsyncMock)
+    def test_custom_overloaded_delay_multiplier(self, mock_sleep):
+        """Config overloaded_delay_multiplier=5.0 -> first sleep == 0.05 (0.01 * 5x)."""
+        provider = AnthropicProvider(
+            api_key="test-key",
+            config={
+                "use_streaming": False,
+                "max_retries": 3,
+                "min_retry_delay": 0.01,
+                "max_retry_delay": 60.0,
+                "retry_jitter": False,
+                "overloaded_delay_multiplier": 5.0,
+            },
+        )
+        provider.coordinator = cast(ModuleCoordinator, FakeCoordinator())
+        dummy = DummyResponse()
+
+        raw_mock = MagicMock()
+        raw_mock.parse.return_value = dummy
+        raw_mock.headers = {}
+
+        provider.client.messages.with_raw_response.create = AsyncMock(
+            side_effect=[
+                _make_sdk_overloaded_error(),
+                raw_mock,
+            ]
+        )
+
+        asyncio.run(provider.complete(_simple_request()))
+
+        assert mock_sleep.await_count >= 1
+        first_sleep = mock_sleep.await_args_list[0].args[0]
+        # min_retry_delay=0.01 * 2^0 = 0.01, then * 5x custom multiplier = 0.05
+        assert abs(first_sleep - 0.05) < 0.001, (
+            f"Expected sleep ~0.05 (0.01 * 5x custom multiplier), got {first_sleep}"
+        )
