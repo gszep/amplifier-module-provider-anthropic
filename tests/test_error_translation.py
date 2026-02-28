@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import anthropic
 import pytest
+from anthropic._exceptions import OverloadedError as AnthropicOverloadedError
 
 from amplifier_core import ModuleCoordinator
 from amplifier_core.llm_errors import (
@@ -492,3 +493,102 @@ class TestModelPassthrough:
             asyncio.run(provider.complete(_simple_request()))
 
         assert exc_info.value.model == self.EXPECTED_MODEL
+
+
+class TestOverloadedErrorTranslation:
+    """Tests for Anthropic 529 OverloadedError translation."""
+
+    @staticmethod
+    def _make_overloaded_error(
+        retry_after: str | None = None,
+    ) -> AnthropicOverloadedError:
+        """Create a mock OverloadedError with status_code=529 and optional retry-after header."""
+        mock_response = MagicMock()
+        mock_response.status_code = 529
+        headers: dict[str, str] = {}
+        if retry_after is not None:
+            headers["retry-after"] = retry_after
+        mock_response.headers = headers
+        return AnthropicOverloadedError(
+            "overloaded",
+            response=mock_response,
+            body={
+                "type": "error",
+                "error": {"type": "overloaded_error", "message": "Overloaded"},
+            },
+        )
+
+    def test_translates_to_provider_unavailable(self):
+        provider = _make_provider()
+        sdk_error = self._make_overloaded_error()
+        provider.client.messages.with_raw_response.create = AsyncMock(
+            side_effect=sdk_error
+        )
+
+        with pytest.raises(KernelProviderUnavailableError) as exc_info:
+            asyncio.run(provider.complete(_simple_request()))
+
+        e = exc_info.value
+        assert e.provider == "anthropic"
+        assert e.status_code == 529
+        assert e.retryable is True
+
+    def test_cause_preserved(self):
+        provider = _make_provider()
+        sdk_error = self._make_overloaded_error()
+        provider.client.messages.with_raw_response.create = AsyncMock(
+            side_effect=sdk_error
+        )
+
+        with pytest.raises(KernelProviderUnavailableError) as exc_info:
+            asyncio.run(provider.complete(_simple_request()))
+
+        assert exc_info.value.__cause__ is sdk_error
+
+    def test_retry_after_extracted_from_header(self):
+        provider = _make_provider()
+        sdk_error = self._make_overloaded_error(retry_after="120.0")
+        provider.client.messages.with_raw_response.create = AsyncMock(
+            side_effect=sdk_error
+        )
+
+        with pytest.raises(KernelProviderUnavailableError) as exc_info:
+            asyncio.run(provider.complete(_simple_request()))
+
+        assert exc_info.value.retry_after == 120.0
+
+    def test_retry_after_none_when_no_header(self):
+        provider = _make_provider()
+        sdk_error = self._make_overloaded_error()
+        provider.client.messages.with_raw_response.create = AsyncMock(
+            side_effect=sdk_error
+        )
+
+        with pytest.raises(KernelProviderUnavailableError) as exc_info:
+            asyncio.run(provider.complete(_simple_request()))
+
+        assert exc_info.value.retry_after is None
+
+    def test_delay_multiplier_matches_default_config(self):
+        provider = _make_provider()
+        sdk_error = self._make_overloaded_error()
+        provider.client.messages.with_raw_response.create = AsyncMock(
+            side_effect=sdk_error
+        )
+
+        with pytest.raises(KernelProviderUnavailableError) as exc_info:
+            asyncio.run(provider.complete(_simple_request()))
+
+        assert exc_info.value.delay_multiplier == 10.0
+
+    def test_model_included(self):
+        provider = _make_provider()
+        sdk_error = self._make_overloaded_error()
+        provider.client.messages.with_raw_response.create = AsyncMock(
+            side_effect=sdk_error
+        )
+
+        with pytest.raises(KernelProviderUnavailableError) as exc_info:
+            asyncio.run(provider.complete(_simple_request()))
+
+        assert exc_info.value.model == "claude-sonnet-4-5"

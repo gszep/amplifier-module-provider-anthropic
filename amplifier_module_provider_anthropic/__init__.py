@@ -149,6 +149,7 @@ from anthropic import AsyncAnthropic
 from anthropic import AuthenticationError as AnthropicAuthenticationError
 from anthropic import BadRequestError as AnthropicBadRequestError
 from anthropic import RateLimitError as AnthropicRateLimitError
+from anthropic._exceptions import OverloadedError as AnthropicOverloadedError
 
 logger = logging.getLogger(__name__)
 
@@ -293,6 +294,9 @@ class AnthropicProvider:
             min_delay=float(self.config.get("min_retry_delay", 1.0)),
             max_delay=float(self.config.get("max_retry_delay", 60.0)),
             jitter=float(jitter_val),
+        )
+        self._overloaded_delay_multiplier = float(
+            self.config.get("overloaded_delay_multiplier", 10.0)
         )
 
         # Pre-emptive throttle configuration
@@ -1242,6 +1246,27 @@ class AnthropicProvider:
                         model=params["model"],
                         status_code=getattr(e, "status_code", 400),
                     ) from e
+
+            except AnthropicOverloadedError as e:
+                body = getattr(e, "body", None)
+                error_msg = json.dumps(body) if body is not None else str(e)
+                retry_after: float | None = None
+                if hasattr(e, "response") and e.response:
+                    raw = e.response.headers.get("retry-after")
+                    if raw is not None:
+                        try:
+                            retry_after = float(raw)
+                        except (ValueError, TypeError):
+                            pass
+                raise KernelProviderUnavailableError(
+                    error_msg,
+                    provider="anthropic",
+                    model=params["model"],
+                    status_code=529,
+                    retryable=True,
+                    retry_after=retry_after,
+                    delay_multiplier=self._overloaded_delay_multiplier,
+                ) from e
 
             except AnthropicAPIStatusError as e:
                 status = getattr(e, "status_code", 500)
