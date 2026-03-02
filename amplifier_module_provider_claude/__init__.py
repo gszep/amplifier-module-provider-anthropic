@@ -1,6 +1,4 @@
-"""Claude Claude Code CLI provider module for Amplifier.
-Amplifier's orchestrator handles tool execution - Claude Code only decides which tools to call.
-"""
+"""Claude Code CLI provider module for Amplifier."""
 
 __all__ = ["mount", "ClaudeProvider"]
 __amplifier_module_type__ = "provider"
@@ -52,28 +50,9 @@ from pydantic import ValidationError
 
 logger = logging.getLogger(__name__)
 
-# --- SDK Compatibility Patch ------------------------------------------------
-# Claude Code CLI v2.1.42+ emits message types (e.g. "rate_limit_event") not
-# yet handled by claude-agent-sdk <= 0.1.38.  The SDK's strict parser raises
-# MessageParseError for unknown types, which kills the async generator
-# (Python generator protocol: unhandled exception = generator finalized).
-# Catching the error on the consumer side is too late -- the generator is
-# already dead and the ResultMessage (with session ID and usage) is lost.
-#
-# The SDK has TWO call sites for parse_message:
-#   1. _internal/client.py:141  -- InternalClient.process_query()
-#      imports via `from .message_parser import parse_message` at module level
-#   2. client.py:184            -- ClaudeSDKClient.receive_messages()
-#      imports via `from ._internal.message_parser import parse_message`
-#      as a LOCAL import inside the method body (re-resolves every call)
-#
-# The provider uses path (2). Patching `message_parser.parse_message`
-# covers the local import in (2) since it re-reads the module attribute.
-# We also patch `_internal.client.parse_message` for (1) as belt-and-suspenders.
-#
+# SDK patch: tolerate unknown message types (e.g. "rate_limit_event") from CLI v2.1.42+.
 # Tracking: https://github.com/anthropics/claude-agent-sdk-python/issues/583
 # Remove once claude-agent-sdk ships the fix (PR #589).
-# ---------------------------------------------------------------------------
 from claude_agent_sdk._errors import MessageParseError as _MessageParseError  # type: ignore
 
 _original_parse_message = _sdk_message_parser.parse_message
@@ -96,11 +75,8 @@ def _tolerant_parse_message(data: dict) -> claude_agent_sdk.types.Message:
         raise  # re-raise genuine parse errors (malformed data, missing fields)
 
 
-# Patch the canonical definition (covers local imports that re-resolve)
 _sdk_message_parser.parse_message = _tolerant_parse_message
-# Patch the already-imported binding in _internal/client.py
 _sdk_internal_client.parse_message = _tolerant_parse_message
-# --- End SDK Compatibility Patch --------------------------------------------
 SESSION_TAG = "[session]:"
 SESSION = SESSION_TAG + """{"id": null}"""
 
@@ -117,12 +93,7 @@ class WebSearchContent:
 
 @dataclass(frozen=True)
 class ModelCapabilities:
-    """Per-model capability matrix -- single source of truth.
-
-    Every model-specific decision in the provider (context window size,
-    thinking mode, output capacity, etc.) should be derived from this
-    dataclass rather than scattered if/else checks.
-    """
+    """Per-model capability matrix."""
 
     family: str
     max_output_tokens: int = 64000
@@ -165,9 +136,7 @@ class Session(RedactedThinkingBlock):
         self.json |= {"id": value}
 
 
-# Canonical model IDs for routing matrix compatibility.
-# Maps CLI alias -> (full model ID, display name).
-# The CLI accepts both short aliases ("sonnet") and full versioned IDs.
+# CLI alias -> (full model ID, display name)
 _CANONICAL_MODELS: dict[str, tuple[str, str]] = {
     "opus": ("claude-opus-4-6", "Claude Opus 4.6"),
     "sonnet": ("claude-sonnet-4-6", "Claude Sonnet 4.6"),
@@ -187,18 +156,9 @@ class ClaudeChatResponse(ChatResponse):
 
 
 async def mount(coordinator: ModuleCoordinator, config: dict[str, Any] | None = None):
-    """Mount the Claude provider using Claude Code CLI.
-
-    Args:
-        coordinator: The module coordinator to mount to.
-        config: Optional configuration dictionary.
-
-    Returns:
-        Optional cleanup function.
-    """
+    """Mount the Claude provider."""
     config = config or {}
 
-    # Check if CLI is available
     cli_path = shutil.which("claude")
     if not cli_path:
         logger.warning(
@@ -221,11 +181,7 @@ async def mount(coordinator: ModuleCoordinator, config: dict[str, Any] | None = 
 
 
 class ClaudeProvider:
-    """Claude Code CLI integration for Amplifier.
-
-    Amplifier's orchestrator handles all tool execution.
-    Claude only decides which tools to call.
-    """
+    """Claude Code CLI integration for Amplifier."""
 
     name = "claude"
     api_label = "Claude Code"
@@ -235,12 +191,6 @@ class ClaudeProvider:
         config: dict[str, Any] | None = None,
         coordinator: ModuleCoordinator | None = None,
     ):
-        """Initialize the Claude provider.
-
-        Args:
-            config: Provider configuration.
-            coordinator: The module coordinator for event emission.
-        """
         self.config = config or {}
         self.coordinator = coordinator
 
@@ -251,9 +201,8 @@ class ClaudeProvider:
         )
 
         self._beta_headers: list[str] = []
-        self.context_window = 200000  # beta-headers: 1m context not available
+        self.context_window = 200000
 
-        # Derive defaults from the configured default model
         default_caps = self._get_capabilities(self.default_model)
         self.max_tokens: int = self.config.get(
             "max_tokens", default_caps.max_output_tokens
@@ -269,7 +218,7 @@ class ClaudeProvider:
         self.debug_truncate_length: int = self.config.get("debug_truncate_length", 180)
 
         self.timeout: float = self.config.get("timeout", 600.0)
-        self.use_streaming = True  # sdk only supports streaming
+        self.use_streaming = True
         self.enable_web_search: bool = self.config.get("enable_web_search", False)
 
         self._repaired_tool_ids: set[str] = set()
@@ -279,7 +228,6 @@ class ClaudeProvider:
 
     @property
     def client(self) -> AsyncAnthropic:
-        """Dummy property to match other providers' structure."""
         if self._client is None:
             self._client = AsyncAnthropic(max_retries=0)
         return self._client
@@ -289,7 +237,9 @@ class ClaudeProvider:
             id="claude",
             display_name="Claude Code",
             credential_env_vars=[],
-            capabilities=list(self._get_capabilities(self.default_model).capability_tags),
+            capabilities=list(
+                self._get_capabilities(self.default_model).capability_tags
+            ),
             defaults={
                 "model": self.default_model,
                 "max_tokens": self.max_tokens,
@@ -321,10 +271,6 @@ class ClaudeProvider:
         return result
 
     def _truncate_values(self, obj: Any, max_length: int | None = None) -> Any:
-        """Recursively truncate string values in nested structures.
-
-        Delegates to shared utility from amplifier_core.utils.
-        """
         length: int = (
             max_length
             if max_length is not None
@@ -334,7 +280,6 @@ class ClaudeProvider:
 
     @staticmethod
     def _detect_family(model_id: str) -> str:
-        """Detect the Claude model family from a model ID string."""
         model_lower = model_id.lower()
         for family in ("opus", "sonnet", "haiku"):
             if family in model_lower:
@@ -343,11 +288,6 @@ class ClaudeProvider:
 
     @staticmethod
     def _detect_version(model_id: str, family: str) -> tuple[int, int]:
-        """Extract (major, minor) version from a model ID.
-
-        Parses patterns like ``claude-opus-4-6``, ``claude-sonnet-4-5-20250929``.
-        Returns ``(0, 0)`` when the version cannot be determined.
-        """
         pattern = rf"{family}-(\d+)-(\d+)"
         match = re.search(pattern, model_id.lower())
         if match:
@@ -356,15 +296,6 @@ class ClaudeProvider:
 
     @classmethod
     def _get_capabilities(cls, model_id: str) -> ModelCapabilities:
-        """Return the capability matrix for *model_id*.
-
-        Version requirements:
-        - Opus 4.6+: adaptive thinking, 128K output
-        - Sonnet 4.5+: extended thinking, 64K output
-        - Haiku: fast inference, no thinking
-
-        Unknown versions assume latest capabilities for forward compat.
-        """
         family = cls._detect_family(model_id)
         major, minor = cls._detect_version(model_id, family)
         version_known = (major, minor) != (0, 0)
@@ -377,7 +308,13 @@ class ClaudeProvider:
                 supports_thinking=True,
                 supports_adaptive_thinking=is_46_plus,
                 default_thinking_budget=64000 if is_46_plus else 32000,
-                capability_tags=("tools", "thinking", "streaming", "json_mode", "vision"),
+                capability_tags=(
+                    "tools",
+                    "thinking",
+                    "streaming",
+                    "json_mode",
+                    "vision",
+                ),
             )
 
         if family == "sonnet":
@@ -386,11 +323,16 @@ class ClaudeProvider:
                 supports_thinking=True,
                 supports_adaptive_thinking=False,
                 default_thinking_budget=32000,
-                capability_tags=("tools", "thinking", "streaming", "json_mode", "vision"),
+                capability_tags=(
+                    "tools",
+                    "thinking",
+                    "streaming",
+                    "json_mode",
+                    "vision",
+                ),
             )
 
         if family == "haiku":
-            # Haiku 4.5+ supports extended thinking (no adaptive thinking, no 1M context)
             is_45_plus = not version_known or (major, minor) >= (4, 5)
             if is_45_plus:
                 return ModelCapabilities(
@@ -412,12 +354,10 @@ class ClaudeProvider:
                 capability_tags=("tools", "streaming", "json_mode", "fast", "vision"),
             )
 
-        # Unknown family -- conservative defaults
         return ModelCapabilities(family=family)
 
     @staticmethod
     def _has_session_block(msg: Message) -> bool:
-        """Check if a message contains a [session]: redacted_thinking block."""
         if msg.role != "assistant" or not isinstance(msg.content, list):
             return False
         for block in msg.content:
@@ -432,22 +372,11 @@ class ClaudeProvider:
         return False
 
     def _get_recent_messages(self, messages: list[Message]) -> list[Message]:
-        """Subset messages for incremental CLI delivery using session block anchor.
-
-        The provider appends a [session]: redacted_thinking block to every
-        assistant response. This block marks the CLI's last response point.
-        Everything after it is new content that needs delivery.
-
-        This approach is:
-        - Content-agnostic: immune to hook output changes between turns
-        - Position-independent: no integer indices that can desync
-        - Structurally anchored: the session block is always present and unique
-        """
+        """Subset messages for incremental CLI delivery using session block anchor."""
         has_system_prefix = bool(messages) and messages[0].role == "system"
         if not has_system_prefix:
             return messages
 
-        # Find end of system messages at the start
         system_end = 0
         for i, m in enumerate(messages):
             if m.role == "system":
@@ -458,14 +387,6 @@ class ClaudeProvider:
         system_messages = messages[:system_end]
         conversation = messages[system_end:]
 
-        # On resumed session, find the assistant message with our session block.
-        # This marks the CLI's last response — everything after it is new.
-        #
-        # The anchor assistant message is INCLUDED in the slice because
-        # downstream _convert_messages needs its tool_use blocks to populate
-        # valid_tool_use_ids. Without it, every tool result is "orphaned."
-        # The assistant content itself is harmless: _convert_prompt_from_request_params
-        # skips all assistant blocks (case "assistant": pass).
         if self._session.id:
             anchor_idx = None
             for i in range(len(conversation) - 1, -1, -1):
@@ -502,12 +423,6 @@ class ClaudeProvider:
         ]
 
     def _create_synthetic_result(self, call_id: str, tool_name: str) -> Message:
-        """Create synthetic error result for missing tool response.
-
-        This is a BACKUP for when tool results go missing AFTER execution.
-        The orchestrator should handle tool execution errors at runtime,
-        so this should only trigger on context/parsing bugs.
-        """
         return Message(
             role="tool",
             content=(
@@ -524,16 +439,6 @@ class ClaudeProvider:
         )
 
     async def complete(self, request: ChatRequest, **kwargs: Any) -> ChatResponse:
-        """
-        Generate completion from ChatRequest.
-
-        Args:
-            request: Typed chat request with messages, tools, config
-            **kwargs: Provider-specific options (override request fields)
-
-        Returns:
-            ChatResponse with content blocks, tool calls, usage
-        """
         missing = self._find_missing_tool_results(request.messages)
 
         if missing:
@@ -577,18 +482,9 @@ class ClaudeProvider:
     def _format_system_with_cache(
         self, system_msgs: list[Message]
     ) -> list[dict[str, Any]] | None:
-        """Format system messages as content block array with cache_control.
-
-        Anthropic requires system as array of content blocks for caching.
-        Cache breakpoint goes on the LAST block.
-
-        Returns:
-            List of content blocks, or None if no system messages
-        """
         if not system_msgs:
             return None
 
-        # Combine into single text (preserves current behavior)
         combined = "\n\n".join(
             m.content if isinstance(m.content, str) else "" for m in system_msgs
         )
@@ -598,7 +494,6 @@ class ClaudeProvider:
 
         block: dict[str, Any] = {"type": "text", "text": combined}
 
-        # Add cache_control if enabled
         if self.enable_prompt_caching:
             block["cache_control"] = {"type": "ephemeral"}
 
@@ -607,15 +502,6 @@ class ClaudeProvider:
     async def _complete_chat_request(
         self, request: ChatRequest, **kwargs
     ) -> ChatResponse:
-        """Handle ChatRequest format with developer message conversion.
-
-        Args:
-            request: ChatRequest with messages
-            **kwargs: Additional parameters
-
-        Returns:
-            ChatResponse with content blocks
-        """
 
         self._set_session_from_request(request)
         request.messages = self._get_recent_messages(request.messages)
@@ -624,18 +510,12 @@ class ClaudeProvider:
             f"Received ChatRequest with {len(request.messages)} messages (debug={self.debug})"
         )
 
-        # Separate messages by role
         system_msgs = [m for m in request.messages if m.role == "system"]
         developer_msgs = [m for m in request.messages if m.role == "developer"]
         conversation = [
             m for m in request.messages if m.role in ("user", "assistant", "tool")
         ]
 
-        logger.debug(
-            f"Separated: {len(system_msgs)} system, {len(developer_msgs)} developer, {len(conversation)} conversation"
-        )
-
-        # Format system messages as content block array (required for caching)
         system_blocks = self._format_system_with_cache(system_msgs)
 
         if system_blocks:
@@ -645,7 +525,6 @@ class ClaudeProvider:
         else:
             logger.info("[PROVIDER] No system messages")
 
-        # Convert developer messages to XML-wrapped user messages (at top)
         context_user_msgs = []
         for i, dev_msg in enumerate(developer_msgs):
             content = dev_msg.content if isinstance(dev_msg.content, str) else ""
@@ -657,25 +536,12 @@ class ClaudeProvider:
             wrapped = f"<context_file>\n{content}\n</context_file>"
             context_user_msgs.append({"role": "user", "content": wrapped})
 
-        logger.info(
-            f"[PROVIDER] Created {len(context_user_msgs)} XML-wrapped context messages"
-        )
-
-        # Convert conversation messages
         conversation_msgs = self._convert_messages(
             [m.model_dump() for m in conversation]
         )
-        logger.info(
-            f"[PROVIDER] Converted {len(conversation_msgs)} conversation messages"
-        )
-
-        # Combine: context THEN conversation
         all_messages = context_user_msgs + conversation_msgs
-        # Apply cache control to last message for incremental context caching
         all_messages = self._apply_message_cache_control(all_messages)
-        logger.info(f"[PROVIDER] Final message count for API: {len(all_messages)}")
 
-        # Prepare request parameters
         params = {
             "model": kwargs.get("model", self.default_model),
             "messages": all_messages,
@@ -688,51 +554,31 @@ class ClaudeProvider:
         if system_blocks:
             params["system"] = system_blocks
 
-        # Add tools if provided
         self._available_tool_names = (
             {tool.name for tool in request.tools} if request.tools else set()
         )
         if request.tools:
             tools = self._convert_tools_from_request(request.tools)
             params["tools"] = self._apply_tool_cache_control(tools)
-            # Add tool_choice if specified
             if tool_choice := kwargs.get("tool_choice"):
                 params["tool_choice"] = tool_choice
 
-        # Add native web search tool if enabled (via config or kwargs)
-        # This is a model-native tool that doesn't need function conversion
         web_search_enabled = kwargs.get("enable_web_search", self.enable_web_search)
         if web_search_enabled:
             web_search_tool = self._build_web_search_tool(kwargs)
             if "tools" not in params:
                 params["tools"] = []
-            # Add web search tool at the beginning (native tools typically come first)
             params["tools"].insert(0, web_search_tool)
-            logger.info("[PROVIDER] Native web search tool enabled")
 
-        # Enable extended thinking if requested
-        # Precedence chain:
-        #   1. kwargs["extended_thinking"]  -- explicit per-request override
-        #   2. request.reasoning_effort     -- portable kernel interface
-        #   3. config defaults              -- session-level settings
-        #
-        # kwargs["extended_thinking"]=False can disable thinking even when
-        # reasoning_effort is set (explicit opt-out).
         thinking_enabled = bool(kwargs.get("extended_thinking"))
-
-        # Check request.reasoning_effort when kwargs don't specify
         reasoning_effort = getattr(request, "reasoning_effort", None)
         if "extended_thinking" not in kwargs and reasoning_effort is not None:
-            # reasoning_effort implies extended_thinking=True
             thinking_enabled = True
 
         thinking_budget = None
         interleaved_thinking_enabled = False
         request_caps = self._get_capabilities(params["model"])
         if thinking_enabled:
-            # Guard: skip thinking for models that don't support it (e.g. Haiku).
-            # Without this check we would send budget_tokens=0 which violates
-            # the API's >= 1024 minimum.
             if not request_caps.supports_thinking:
                 logger.info(
                     "[PROVIDER] Model %s does not support extended thinking"
@@ -741,20 +587,12 @@ class ClaudeProvider:
                 )
                 thinking_enabled = False
             else:
-                # reasoning_effort maps to budget_tokens:
-                # | reasoning_effort | budget_tokens                    |
-                # |-----------------|----------------------------------|
-                # | "low"           | 4096 (minimal thinking)          |
-                # | "medium"        | model default                    |
-                # | "high"          | model default                    |
-                # | None            | (existing behavior)              |
                 effort_budget: int | None = None
                 if reasoning_effort == "low":
                     effort_budget = 4096
                 elif reasoning_effort in ("medium", "high"):
                     effort_budget = request_caps.default_thinking_budget
 
-                # Resolve budget: kwargs > reasoning_effort > config > model default
                 budget_tokens = (
                     kwargs.get("thinking_budget_tokens")
                     or effort_budget
@@ -771,11 +609,8 @@ class ClaudeProvider:
                     "budget_tokens": budget_tokens,
                 }
 
-                # CRITICAL: Anthropic requires temperature=1.0 when thinking is enabled
                 params["temperature"] = 1.0
 
-                # Ensure max_tokens accommodates thinking budget + response.
-                # Cap to the model's output ceiling so we never exceed API limits.
                 model_ceiling = request_caps.max_output_tokens
                 target_tokens = min(budget_tokens + buffer_tokens, model_ceiling)
                 if params.get("max_tokens"):
@@ -785,28 +620,12 @@ class ClaudeProvider:
                 else:
                     params["max_tokens"] = target_tokens
 
-                # interleaved thinking not available via CLI
                 interleaved_thinking_enabled = False
 
-                logger.info(
-                    "[PROVIDER] Extended thinking enabled (budget=%s, buffer=%s, temperature=1.0, max_tokens=%s, interleaved=%s)",
-                    thinking_budget,
-                    buffer_tokens,
-                    params["max_tokens"],
-                    interleaved_thinking_enabled,
-                )
-
-        # Add stop_sequences if specified
         if stop_sequences := kwargs.get("stop_sequences"):
             params["stop_sequences"] = stop_sequences
 
-        logger.info(
-            f"[PROVIDER] Anthropic API call - model: {params['model']}, messages: {len(params['messages'])}, system: {bool(system_blocks)}, tools: {len(params.get('tools', []))}, thinking: {thinking_enabled}"
-        )
-
-        # Emit llm:request event
         if self.coordinator and hasattr(self.coordinator, "hooks"):
-            # INFO level: Summary only
             await self.coordinator.hooks.emit(
                 "llm:request",
                 {
@@ -820,7 +639,6 @@ class ClaudeProvider:
                 },
             )
 
-            # DEBUG level: Full request payload with truncated values (if debug enabled)
             if self.debug:
                 await self.coordinator.hooks.emit(
                     "llm:request:debug",
@@ -831,14 +649,13 @@ class ClaudeProvider:
                     },
                 )
 
-            # RAW level: Complete params dict as sent to Anthropic API (if debug AND raw_debug enabled)
             if self.debug and self.raw_debug:
                 await self.coordinator.hooks.emit(
                     "llm:request:raw",
                     {
                         "lvl": "DEBUG",
                         "provider": "anthropic",
-                        "params": params,  # Complete untruncated params
+                        "params": params,
                     },
                 )
 
@@ -862,9 +679,6 @@ class ClaudeProvider:
                     await client.query(prompt, session_id=self._session.id)
                     response = await self._parse_response(client)
 
-                    # Signal CLI that input is complete and wait for graceful exit
-                    # so it can flush the full response to its session file before
-                    # the context manager tears down the subprocess with SIGTERM.
                     try:
                         transport = client._transport
                         await transport.end_input()
@@ -876,13 +690,11 @@ class ClaudeProvider:
                         pass
 
         except TimeoutError:
-            # Forcefully kill CLI subprocess to prevent zombie processes
             self._force_kill_subprocess(_client_ref)
             elapsed_ms = int((time.time() - start_time) * 1000)
             error_msg = f"Request timed out after {self.timeout}s"
             logger.error(f"[PROVIDER] Anthropic API error: {error_msg}")
 
-            # Emit error event
             if self.coordinator and hasattr(self.coordinator, "hooks"):
                 await self.coordinator.hooks.emit(
                     "llm:response",
@@ -897,20 +709,16 @@ class ClaudeProvider:
             raise TimeoutError(error_msg) from None
 
         except asyncio.CancelledError:
-            # Ctrl+C or parent task cancellation - forcefully kill the subprocess
             self._force_kill_subprocess(_client_ref)
             logger.warning("[PROVIDER] Request cancelled - CLI subprocess killed")
             raise
 
         except Exception as e:
-            # Kill CLI subprocess on any error
             self._force_kill_subprocess(_client_ref)
             elapsed_ms = int((time.time() - start_time) * 1000)
-            # Ensure error message is never empty
             error_msg = str(e) or f"{type(e).__name__}: (no message)"
             logger.error(f"[PROVIDER] Anthropic API error: {error_msg}")
 
-            # Emit error event
             if self.coordinator and hasattr(self.coordinator, "hooks"):
                 await self.coordinator.hooks.emit(
                     "llm:response",
@@ -922,20 +730,13 @@ class ClaudeProvider:
                         "error": error_msg,
                     },
                 )
-            # Re-raise with meaningful message if original was empty
             if not str(e):
                 raise type(e)(error_msg) from e
             raise
 
-        # If we get here, request succeeded - continue with response handling
         elapsed_ms = int((time.time() - start_time) * 1000)
 
-        logger.info("[PROVIDER] Received response from Anthropic API")
-        logger.debug(f"[PROVIDER] Response type: {response.model}")
-
-        # Emit llm:response event
         if self.coordinator and hasattr(self.coordinator, "hooks"):
-            # INFO level: Summary with rate limit info
             response_event: dict[str, Any] = {
                 "provider": "anthropic",
                 "model": params["model"],
@@ -961,9 +762,8 @@ class ClaudeProvider:
 
             await self.coordinator.hooks.emit("llm:response", response_event)
 
-            # DEBUG level: Full response with truncated values (if debug enabled)
             if self.debug:
-                response_dict = response.model_dump()  # Pydantic model → dict
+                response_dict = response.model_dump()
                 await self.coordinator.hooks.emit(
                     "llm:response:debug",
                     {
@@ -975,26 +775,19 @@ class ClaudeProvider:
                     },
                 )
 
-            # RAW level: Complete response object from Anthropic API (if debug AND raw_debug enabled)
             if self.debug and self.raw_debug:
                 await self.coordinator.hooks.emit(
                     "llm:response:raw",
                     {
                         "lvl": "DEBUG",
                         "provider": "anthropic",
-                        "response": response.model_dump(),  # Complete untruncated response
+                        "response": response.model_dump(),
                     },
                 )
 
-        # Convert to ChatResponse
         return self._convert_to_chat_response(response)
 
     def _force_kill_subprocess(self, client: "ClaudeSDKClient | None") -> None:
-        """Forcefully kill the CLI subprocess to prevent zombie processes.
-
-        Called on timeout, cancellation, or errors to ensure the subprocess
-        doesn't outlive the provider request.
-        """
         if client is None:
             return
         try:
@@ -1010,25 +803,11 @@ class ClaudeProvider:
             logger.debug(f"[PROVIDER] Error killing subprocess: {exc}")
 
     def parse_tool_calls(self, response: ChatResponse) -> list[ToolCall]:
-        """Parse tool calls from response.
-
-        Tool calls are extracted in complete() and placed in response.tool_calls.
-        Filters out tool calls with empty/missing arguments to handle
-        Claude API quirk where empty tool_use blocks are sometimes generated.
-
-        Args:
-            response: The ChatResponse to extract tool calls from.
-
-        Returns:
-            List of valid tool calls (with non-empty arguments).
-        """
         if not response.tool_calls:
             return []
 
         valid_calls = []
         for tc in response.tool_calls:
-            # Skip tool calls with truly missing arguments (None),
-            # but preserve empty dict {} which is valid for no-arg tools
             if tc.arguments is None:
                 logger.debug(f"Filtering out tool '{tc.name}' with missing arguments")
                 continue
@@ -1042,17 +821,7 @@ class ClaudeProvider:
         return valid_calls
 
     def _clean_content_block(self, block: dict[str, Any]) -> dict[str, Any]:
-        """Clean a content block for API by removing fields not accepted by Anthropic API.
-
-        Anthropic API may include extra fields (like 'visibility') in responses,
-        but does NOT accept these fields when blocks are sent as input in messages.
-
-        Args:
-            block: Raw content block dict (may include visibility, etc.)
-
-        Returns:
-            Cleaned content block dict with only API-accepted fields
-        """
+        """Remove fields not accepted by Anthropic API from a content block."""
         block_type = block.get("type")
 
         if block_type == "text":
@@ -1076,8 +845,6 @@ class ClaudeProvider:
                 "content": block.get("content", ""),
             }
         if block_type == "web_search_tool_result":
-            # Web search results are model-native and should be passed through
-            # with minimal cleaning (just remove internal fields)
             cleaned: dict[str, Any] = {
                 "type": "web_search_tool_result",
             }
@@ -1086,35 +853,20 @@ class ClaudeProvider:
             if "content" in block:
                 cleaned["content"] = block["content"]
             return cleaned
-        # Unknown block type - return as-is but remove visibility
         cleaned = dict(block)
         cleaned.pop("visibility", None)
         return cleaned
 
     def _convert_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """Convert messages to Anthropic format.
-
-        CRITICAL: Anthropic requires ALL tool_result blocks from one assistant's tool_use
-        to be batched into a SINGLE user message with multiple tool_result blocks in the
-        content array. We cannot send separate user messages for each tool result.
-
-        This method batches consecutive tool messages into one user message.
-
-        DEFENSIVE: Also validates that each tool_result has a corresponding tool_use
-        in a preceding assistant message. Orphaned tool_results (from context compaction)
-        are skipped to avoid API errors.
-        """
-        # First pass: collect all valid tool_use_ids from assistant messages
+        """Convert messages to Anthropic format, batching tool results."""
         valid_tool_use_ids: set[str] = set()
         for msg in messages:
             if msg.get("role") == "assistant":
-                # Check tool_calls field (legacy format)
                 if msg.get("tool_calls"):
                     for tc in msg.get("tool_calls", []):
                         tc_id = tc.get("id") or tc.get("tool_call_id")
                         if tc_id:
                             valid_tool_use_ids.add(tc_id)
-                # Also check content blocks for tool_call/tool_use types
                 content = msg.get("content")
                 if isinstance(content, list):
                     for block in content:
@@ -1134,22 +886,17 @@ class ClaudeProvider:
             role = msg.get("role")
             content = msg.get("content", "")
 
-            # Skip system messages (handled separately)
             if role == "system":
                 i += 1
                 continue
 
-            # Batch consecutive tool messages into ONE user message
             if role == "tool":
-                # Collect all consecutive tool results, but only valid ones
                 tool_results = []
                 skipped_count = 0
                 while i < len(messages) and messages[i].get("role") == "tool":
                     tool_msg = messages[i]
                     tool_use_id = tool_msg.get("tool_call_id")
 
-                    # DEFENSIVE: Skip tool_results without valid tool_use_id
-                    # This prevents API errors from orphaned tool_results after compaction
                     if not tool_use_id or tool_use_id not in valid_tool_use_ids:
                         logger.warning(
                             f"Skipping orphaned tool_result (no matching tool_use): "
@@ -1168,12 +915,11 @@ class ClaudeProvider:
                     )
                     i += 1
 
-                # Only add user message if we have valid tool_results
                 if tool_results:
                     anthropic_messages.append(
                         {
                             "role": "user",
-                            "content": tool_results,  # Array of tool_result blocks
+                            "content": tool_results,
                         }
                     )
                 elif skipped_count > 0:
@@ -1182,27 +928,18 @@ class ClaudeProvider:
                     )
                 continue  # i already advanced in while loop
             if role == "assistant":
-                # Assistant messages - check for tool calls or thinking blocks
                 if "tool_calls" in msg and msg["tool_calls"]:
-                    # Assistant message with tool calls
                     content_blocks = []
 
-                    # CRITICAL: Check for thinking block and add it FIRST
                     has_thinking = "thinking_block" in msg and msg["thinking_block"]
                     if has_thinking:
-                        # Clean thinking block (remove visibility field not accepted by API)
                         cleaned_thinking = self._clean_content_block(
                             msg["thinking_block"]
                         )
                         content_blocks.append(cleaned_thinking)
 
-                    # Add text content if present, BUT skip when we have thinking + tool_calls
-                    # When all three are present (thinking + text + tool_use), the text was generated
-                    # but not shown to user yet (tool calls execute first). Including it in history
-                    # misleads the model into thinking it already communicated that info.
                     if content and not has_thinking:
                         if isinstance(content, list):
-                            # Content is a list of blocks - extract text blocks only
                             for block in content:
                                 if (
                                     isinstance(block, dict)
@@ -1223,10 +960,8 @@ class ClaudeProvider:
                                         }
                                     )
                         else:
-                            # Content is a simple string
                             content_blocks.append({"type": "text", "text": content})
 
-                    # Add tool_use blocks
                     for tc in msg["tool_calls"]:
                         content_blocks.append(
                             {
@@ -1241,13 +976,10 @@ class ClaudeProvider:
                         {"role": "assistant", "content": content_blocks}
                     )
                 elif "thinking_block" in msg and msg["thinking_block"]:
-                    # Assistant message with thinking block
-                    # Clean thinking block (remove visibility field not accepted by API)
                     cleaned_thinking = self._clean_content_block(msg["thinking_block"])
                     content_blocks = [cleaned_thinking]
                     if content:
                         if isinstance(content, list):
-                            # Content is a list of blocks - extract text blocks only
                             for block in content:
                                 if (
                                     isinstance(block, dict)
@@ -1268,15 +1000,12 @@ class ClaudeProvider:
                                         }
                                     )
                         else:
-                            # Content is a simple string
                             content_blocks.append({"type": "text", "text": content})
                     anthropic_messages.append(
                         {"role": "assistant", "content": content_blocks}
                     )
                 else:
-                    # Regular assistant message - may have structured content blocks
                     if isinstance(content, list):
-                        # Content is a list of blocks - clean each block
                         cleaned_blocks = [
                             self._clean_content_block(block) for block in content
                         ]
@@ -1284,18 +1013,15 @@ class ClaudeProvider:
                             {"role": "assistant", "content": cleaned_blocks}
                         )
                     else:
-                        # Content is a simple string
                         anthropic_messages.append(
                             {"role": "assistant", "content": content}
                         )
                 i += 1
             elif role == "developer":
-                # Developer messages -> XML-wrapped user messages (context files)
                 wrapped = f"<context_file>\n{content}\n</context_file>"
                 anthropic_messages.append({"role": "user", "content": wrapped})
                 i += 1
             else:
-                # User messages - handle structured content (text + images)
                 if isinstance(content, list):
                     content_blocks = []
                     for block in content:
@@ -1306,7 +1032,6 @@ class ClaudeProvider:
                                     {"type": "text", "text": block.get("text", "")}
                                 )
                             elif block_type == "image":
-                                # Convert ImageBlock to Anthropic image format
                                 source = block.get("source", {})
                                 if source.get("type") == "base64":
                                     content_blocks.append(
@@ -1331,45 +1056,24 @@ class ClaudeProvider:
                             {"role": "user", "content": content_blocks}
                         )
                 else:
-                    # Simple string content
                     anthropic_messages.append({"role": "user", "content": content})
                 i += 1
 
         return anthropic_messages
 
     def _convert_tools_from_request(self, tools: list) -> list[dict[str, Any]]:
-        """Convert ToolSpec objects from ChatRequest to Anthropic format.
-
-        Handles both standard function tools (converted to Anthropic format) and
-        model-native tools like web_search_20250305 (passed through unchanged).
-
-        Model-native tools are identified by having a 'type' attribute that is NOT
-        'function'. These tools use Anthropic's built-in capabilities and should
-        NOT be converted to the standard function tool format.
-
-        Args:
-            tools: List of ToolSpec objects or native tool definitions
-
-        Returns:
-            List of Anthropic-formatted tool definitions
-        """
         anthropic_tools = []
         for tool in tools:
-            # Check if this is a model-native tool (has 'type' that's not 'function')
-            # Native tools like web_search_20250305 are passed through unchanged
             tool_type = getattr(tool, "type", None)
             if tool_type and tool_type != "function":
-                # Model-native tool - pass through as-is (converted to dict if needed)
                 if hasattr(tool, "model_dump"):
                     anthropic_tools.append(tool.model_dump(exclude_none=True))
                 elif isinstance(tool, dict):
                     anthropic_tools.append(tool)
                 else:
-                    # Fallback: build dict from known attributes
                     native_tool: dict[str, Any] = {"type": tool_type}
                     if hasattr(tool, "name") and tool.name:
                         native_tool["name"] = tool.name
-                    # Add any additional config (e.g., max_uses for web search)
                     if hasattr(tool, "max_uses") and tool.max_uses is not None:
                         native_tool["max_uses"] = tool.max_uses
                     if (
@@ -1380,7 +1084,6 @@ class ClaudeProvider:
                     anthropic_tools.append(native_tool)
                 logger.debug(f"[PROVIDER] Added native tool: {tool_type}")
             else:
-                # Standard function tool - convert to Anthropic format
                 anthropic_tools.append(
                     {
                         "name": tool.name,
@@ -1391,91 +1094,49 @@ class ClaudeProvider:
         return anthropic_tools
 
     def _extract_web_search_citations(self, block: Any) -> list[dict[str, Any]]:
-        """Extract citation information from a web search result block.
-
-        Web search results contain citations with source information that can be
-        displayed to users for transparency and attribution.
-
-        Args:
-            block: Web search tool result block from Anthropic response
-
-        Returns:
-            List of citation dicts with title, url, and optional snippet
-        """
         citations = []
-
-        # Web search results have a 'content' field with search results
         content = getattr(block, "content", None)
         if not content:
             return citations
 
-        # Content may be a list of result items or a single object
         results = content if isinstance(content, list) else [content]
 
         for result in results:
-            # Each result may have source information
             if hasattr(result, "type") and result.type == "web_search_result":
                 citation: dict[str, Any] = {}
 
-                # Extract URL (required)
                 if hasattr(result, "url") and result.url:
                     citation["url"] = result.url
                 elif hasattr(result, "source_url") and result.source_url:
                     citation["url"] = result.source_url
 
-                # Extract title
                 if hasattr(result, "title") and result.title:
                     citation["title"] = result.title
 
-                # Extract snippet/description
                 if hasattr(result, "snippet") and result.snippet:
                     citation["snippet"] = result.snippet
                 elif hasattr(result, "description") and result.description:
                     citation["snippet"] = result.description
                 elif hasattr(result, "encrypted_content") and result.encrypted_content:
-                    # Some results use encrypted_content - just note it exists
                     citation["has_content"] = True
 
-                # Only add if we have at least a URL
                 if citation.get("url"):
                     citations.append(citation)
 
         return citations
 
     def _build_web_search_tool(self, kwargs: dict[str, Any]) -> dict[str, Any]:
-        """Build the native web search tool definition.
-
-        The web_search_20250305 tool is a model-native tool that enables Claude
-        to search the web for current information. Unlike function tools, it uses
-        Anthropic's built-in web search capability.
-
-        Tool definition format:
-            {
-                "type": "web_search_20250305",
-                "name": "web_search",
-                "max_uses": 5,  # optional, limits searches per request
-                "user_location": {...}  # optional, for location-aware results
-            }
-
-        Args:
-            kwargs: Request kwargs that may contain web search configuration
-
-        Returns:
-            Web search tool definition dict
-        """
         tool: dict[str, Any] = {
             "type": "web_search_20250305",
-            "name": "web_search",  # Anthropic requires this exact name
+            "name": "web_search",
         }
 
-        # Optional: max_uses limits number of searches per request
         max_uses = kwargs.get("web_search_max_uses") or self.config.get(
             "web_search_max_uses"
         )
         if max_uses is not None:
             tool["max_uses"] = max_uses
 
-        # Optional: user_location for location-aware search results
         user_location = kwargs.get("web_search_user_location") or self.config.get(
             "web_search_user_location"
         )
@@ -1487,50 +1148,24 @@ class ClaudeProvider:
     def _apply_tool_cache_control(
         self, tools: list[dict[str, Any]]
     ) -> list[dict[str, Any]]:
-        """Add cache_control to the last tool definition.
-
-        Per Anthropic spec: cache breakpoint on last tool creates
-        checkpoint for entire tool list.
-
-        Args:
-            tools: List of Anthropic-formatted tool definitions
-
-        Returns:
-            Same list with cache_control on last tool (if caching enabled)
-        """
         if not tools or not self.enable_prompt_caching:
             return tools
 
-        # Add cache_control to last tool
         tools[-1]["cache_control"] = {"type": "ephemeral"}
         return tools
 
     def _apply_message_cache_control(
         self, messages: list[dict[str, Any]]
     ) -> list[dict[str, Any]]:
-        """Add cache_control to last content block of last message.
-
-        Per Anthropic spec: this creates a checkpoint at the end of
-        conversation history, caching the full context.
-
-        Args:
-            messages: Anthropic-formatted message list
-
-        Returns:
-            Same list with cache_control on last message's last block
-        """
         if not messages or not self.enable_prompt_caching:
             return messages
 
         last_msg = messages[-1]
         content = last_msg.get("content")
 
-        # Handle different content formats
         if isinstance(content, list) and content:
-            # Array of content blocks - mark last block
             content[-1]["cache_control"] = {"type": "ephemeral"}
         elif isinstance(content, str):
-            # String content - convert to block array with cache marker
             last_msg["content"] = [
                 {
                     "type": "text",
@@ -1542,14 +1177,6 @@ class ClaudeProvider:
         return messages
 
     def _convert_to_chat_response(self, response: ParsedMessage) -> ChatResponse:
-        """Convert Anthropic response to ChatResponse format.
-
-        Args:
-            response: Anthropic API response
-
-        Returns:
-            AnthropicChatResponse with content blocks and streaming-compatible fields
-        """
 
         content_blocks = []
         tool_calls = []
@@ -1573,7 +1200,6 @@ class ClaudeProvider:
                     )
                 )
                 event_blocks.append(ThinkingContent(text=block.thinking))
-                # NOTE: Do NOT add thinking to text_accumulator - it's internal process, not response content
             elif block.type == "tool_use" or block.type == "tool_call":
                 content_blocks.append(
                     ToolCallBlock(id=block.id, name=block.name, input=block.input)
@@ -1585,8 +1211,6 @@ class ClaudeProvider:
                     ToolCallContent(id=block.id, name=block.name, arguments=block.input)
                 )
             elif block.type == "web_search_tool_result":
-                # Handle native web search results from Anthropic
-                # Extract citations from search results for observability
                 citations = self._extract_web_search_citations(block)
                 web_search_results.append(
                     {
@@ -1595,18 +1219,12 @@ class ClaudeProvider:
                         "citations": citations,
                     }
                 )
-                # Add to event blocks for UI display
                 event_blocks.append(
                     WebSearchContent(
                         query=getattr(block, "query", ""),
                         citations=citations,
                     )
                 )
-                logger.debug(
-                    f"[PROVIDER] Web search returned {len(citations)} citations"
-                )
-
-        # Build usage dict with cache metrics if available
         cache_creation = getattr(response.usage, "cache_creation_input_tokens", None)
         cache_read = getattr(response.usage, "cache_read_input_tokens", None)
 
@@ -1614,12 +1232,10 @@ class ClaudeProvider:
             "input_tokens": response.usage.input_tokens,
             "output_tokens": response.usage.output_tokens,
             "total_tokens": response.usage.input_tokens + response.usage.output_tokens,
-            # Named kernel fields (Phase 2 standard)
             "cache_read_tokens": cache_read,
             "cache_write_tokens": cache_creation,
         }
 
-        # Keep provider-native extras for backward compat
         if cache_creation is not None:
             usage_kwargs["cache_creation_input_tokens"] = cache_creation
         if cache_read is not None:
@@ -1642,11 +1258,8 @@ class ClaudeProvider:
     def _convert_prompt_from_request_params(
         self, params: dict[str, list[dict[str, str | list[dict[str, Any]]]]]
     ) -> str:
-        # only on first prompt
         system: list[str] = []
         tools: list[str] = []
-
-        # at each turn
         system_reminders: list[str] = []
         user_messages: list[str] = []
         tool_results: list[str] = []
@@ -1694,7 +1307,7 @@ class ClaudeProvider:
                                 f"[PROVIDER] Unknown content type for user message: {type(message['content'])}"
                             )
 
-                case "assistant":  # assistant blocks not included in prompt
+                case "assistant":
                     match message["content"]:
                         case list():
                             for block in message["content"]:
@@ -1723,7 +1336,7 @@ class ClaudeProvider:
 
         prompt = ""
 
-        if not self._session.id:  # only include system/tools on first prompt
+        if not self._session.id:
             prompt += "<system>\n" + "\n\n".join(system) + "\n</system>\n\n"
             prompt += "<tools>\n" + "\n\n".join(tools) + "\n</tools>\n\n"
 
@@ -1742,23 +1355,10 @@ class ClaudeProvider:
     def _parse_tool_blocks_from_text(
         self, text: str
     ) -> tuple[list[AnthropicToolUseBlock], str]:
-        """Parse [tool]: {...} blocks from response text.
-
-        Validates parsed tool names against available tools to prevent
-        echoed few-shot examples or hallucinated tool calls from being
-        treated as real tool invocations.
-
-        Returns:
-            Tuple of (validated tool blocks, cleaned text with all
-            parsed tool block spans stripped regardless of validation).
-        """
 
         tool_blocks: list[AnthropicToolUseBlock] = []
         spans_to_remove: list[tuple[int, int]] = []
 
-        # 1. Match Fenced Code (``` ... ```)
-        # 2. Match Inline Code (` ... `) - assumes no newlines inside inline code
-        # 3. Match Tool Start ([tool]:)
         tokenizer = re.compile(r"(```(?:.|\n)*?```)|(`[^`\n]*`)|(\[tool\]:)", re.DOTALL)
 
         pos = 0
@@ -1794,8 +1394,6 @@ class ClaudeProvider:
                     )
                     pos = end
 
-        # Validate tool names against available tools.
-        # Reject blocks with unknown names (echoed examples, hallucinations).
         if self._available_tool_names and tool_blocks:
             validated = []
             for block in tool_blocks:
@@ -1812,8 +1410,6 @@ class ClaudeProvider:
                     )
             tool_blocks = validated
 
-        # Build cleaned text by removing ALL parsed tool block spans
-        # (including filtered ones -- strip echoed examples from text too)
         if spans_to_remove:
             parts: list[str] = []
             prev_end = 0
@@ -1828,7 +1424,6 @@ class ClaudeProvider:
         return tool_blocks, cleaned
 
     async def _parse_response(self, client: ClaudeSDKClient) -> ParsedMessage:
-        """Parse messages from Claude Agent SDK into an Anthropic ParsedMessage."""
 
         model: str = ""
         content: list[ParsedContentBlock] = []
@@ -1873,9 +1468,7 @@ class ClaudeProvider:
 
                 case claude_agent_sdk.types.ResultMessage():
                     received_result = True
-                    self._session.id = (
-                        message.session_id
-                    )  # update session - enables resume
+                    self._session.id = message.session_id
                     if message.usage:
                         usage.input_tokens = message.usage.get(
                             "input_tokens",
@@ -1985,9 +1578,4 @@ Usage:
 </instructions>
 """
 
-INTERLEAVED_THINKING_REMINDER = """Before proceeding, briefly reflect on what you just learned from the tool result
-- What does this tell you about the problem?
-- Does it change your approach or next steps?
-- Are there any unexpected findings to consider?
-
-Think through this internally, then continue with your work."""
+INTERLEAVED_THINKING_REMINDER = """Before proceeding, briefly reflect on what you just learned from the tool result. Think through this internally, then continue with your work."""

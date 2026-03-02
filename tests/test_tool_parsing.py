@@ -1,8 +1,4 @@
-"""Tests for tool-name validation in _parse_tool_blocks_from_text.
-
-Covers the fix for phantom tool calls (first_tool/second_tool) caused by
-echoed TOOL_USE_REMINDER examples being parsed as real tool invocations.
-"""
+"""Tests for tool-name validation in _parse_tool_blocks_from_text."""
 
 import json
 
@@ -11,11 +7,6 @@ from amplifier_module_provider_claude import ClaudeProvider
 
 def _make_provider(**kwargs) -> ClaudeProvider:
     return ClaudeProvider(**kwargs)
-
-
-# =============================================================================
-# Tool-name validation
-# =============================================================================
 
 
 def test_valid_tool_names_are_kept():
@@ -93,18 +84,8 @@ def test_no_available_tools_skips_validation():
     assert blocks[0].name == "anything"
 
 
-# =============================================================================
-# Regression: exact reproduction of the d285ed4d phantom tool scenario
-# =============================================================================
-
-
 def test_phantom_tool_call_scenario():
-    """Exact reproduction of the d285ed4d session bug.
-
-    Claude received only the TOOL_USE_REMINDER and echoed the examples
-    (first_tool, second_tool) alongside a legitimate edit_file call.
-    The parser should keep edit_file and reject the examples.
-    """
+    """Regression: echoed example tools are rejected, real tools are kept."""
     provider = _make_provider()
     provider._available_tool_names = {
         "edit_file",
@@ -173,16 +154,7 @@ def test_phantom_tool_call_scenario():
     assert blocks[0].name == "edit_file"
     assert blocks[0].id == "ef05sys"
 
-    # The hallucinated tool results (rf04cla, pc01fmt) don't have "type": "tool_use"
-    # so they fail AnthropicToolUseBlock validation and aren't parsed at all.
-    # The example tools (first_tool, second_tool) ARE parsed but filtered.
-    # The text should be cleaned of all [tool]: spans.
     assert "first_tool" not in cleaned or "[tool]:" not in cleaned
-
-
-# =============================================================================
-# Existing behavior preserved: fenced code blocks are skipped
-# =============================================================================
 
 
 def test_fenced_code_blocks_still_skipped():

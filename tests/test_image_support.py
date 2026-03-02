@@ -1,7 +1,4 @@
-"""Test image support in Anthropic provider.
-
-Tests ImageBlock handling for vision capabilities (image understanding).
-"""
+"""Test image support in Claude provider."""
 
 import base64
 from pathlib import Path
@@ -28,12 +25,7 @@ def claude_provider():
 
 
 def test_image_block_conversion_to_anthropic_format(claude_provider, test_image_base64):
-    """Test that ImageBlock in ChatRequest converts to Anthropic image format.
-
-    This test verifies the core conversion logic:
-    - ImageBlock with base64 source → Anthropic content array with image type
-    - Text + Image in same message → multiple content blocks in correct order
-    """
+    """ImageBlock with base64 source converts to Anthropic image format."""
     # Create ChatRequest with text + image
     request = ChatRequest(
         messages=[

@@ -1,14 +1,4 @@
-"""Integration tests for provider-claude module.
-
-Tests the architecture:
-- Provider returns tool_calls for Amplifier orchestrator to execute
-- Built-in tools are disabled (--tools "")
-- Tool definitions are injected via system prompt
-
-Requires:
-- amplifier CLI installed locally
-- Claude Code CLI installed and authenticated
-"""
+"""Integration tests for provider-claude module."""
 
 import subprocess
 import tempfile

@@ -1,9 +1,4 @@
-"""Tests for session-block-anchored incremental CLI delivery.
-
-Covers _has_session_block() and _get_recent_messages() which use the
-[session]: redacted_thinking block as a structural anchor to determine
-which messages have already been delivered to the CLI.
-"""
+"""Tests for session-block-anchored incremental CLI delivery."""
 
 from amplifier_core.message_models import Message, ToolCallBlock, ToolResultBlock
 
@@ -31,11 +26,6 @@ def _assistant_with_session(
         blocks.append({"type": "text", "text": text})
     blocks.append(_make_session_block(session_id))
     return Message(role="assistant", content=blocks)
-
-
-# =============================================================================
-# _has_session_block
-# =============================================================================
 
 
 def test_has_session_block_detects_session():
@@ -77,11 +67,6 @@ def test_has_session_block_detects_among_other_blocks():
     assert ClaudeProvider._has_session_block(msg) is True
 
 
-# =============================================================================
-# _get_recent_messages: first call (no session)
-# =============================================================================
-
-
 def test_first_call_returns_all_messages():
     """First call (no session) returns all messages unchanged."""
     provider = _make_provider()
@@ -109,11 +94,6 @@ def test_no_system_prefix_returns_all():
     assert len(result) == 2
 
 
-# =============================================================================
-# _get_recent_messages: resumed session (incremental delivery)
-# =============================================================================
-
-
 def test_resumed_session_sends_only_new_messages():
     """Resumed session sends only messages after the session-block anchor."""
     provider = _make_provider()
@@ -131,10 +111,9 @@ def test_resumed_session_sends_only_new_messages():
     ]
     result = provider._get_recent_messages(messages)
 
-    # Should get: system + anchor assistant + new messages
-    assert len(result) == 4  # system + assistant(anchor) + user + reminder
+    assert len(result) == 4
     assert result[0].role == "system"
-    assert result[1].role == "assistant"  # anchor included for tool_use ID validation
+    assert result[1].role == "assistant"
     assert result[2].content == "Do something"
     assert "<system-reminder" in result[3].content
 
@@ -147,8 +126,7 @@ def test_resumed_session_with_tool_results():
     messages = [
         Message(role="system", content="System prompt"),
         Message(role="user", content="Fix the bug"),
-        _assistant_with_session(),  # anchor - assistant with tool_use + session block
-        # Tool results from the assistant's tool calls:
+        _assistant_with_session(),
         Message(
             role="user",
             content=[ToolResultBlock(tool_call_id="tc1", output='{"ok": true}')],
@@ -167,7 +145,7 @@ def test_resumed_session_with_tool_results():
     # system + assistant(anchor) + 2 tool results + reminder
     assert len(result) == 5
     assert result[0].role == "system"
-    assert result[1].role == "assistant"  # anchor included for tool_use ID validation
+    assert result[1].role == "assistant"
     assert result[2].content[0].type == "tool_result"
     assert result[3].content[0].type == "tool_result"
     assert "<system-reminder" in result[4].content
@@ -238,11 +216,6 @@ def test_multiple_session_blocks_uses_most_recent():
     assert result[0].role == "system"
     assert result[1].role == "assistant"  # second session block = anchor
     assert result[2].content == "Continue"
-
-
-# =============================================================================
-# _get_recent_messages: edge cases
-# =============================================================================
 
 
 def test_nothing_new_after_session_block():
