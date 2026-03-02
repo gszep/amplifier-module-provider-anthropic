@@ -1,0 +1,130 @@
+# Routing Matrix: claude-cli
+#
+# Reference template for routing all roles through the Claude Code CLI provider.
+# Use when running via claude-agent-sdk (CLI subprocess) instead of
+# the direct Anthropic API.
+#
+# IMPORTANT: This file is NOT auto-discovered by the routing hook.
+# The hook only loads matrices from its own bundle's routing/ directory.
+#
+# To use these roles, either:
+#   1. Copy individual role overrides into your settings.yaml (recommended)
+#   2. Submit a PR to add this file to the routing-matrix bundle
+#
+# See the README for settings.yaml override examples.
+#
+# Requires: amplifier-module-provider-claude mounted as "claude".
+# Required roles: "general" and "fast" must be defined in every matrix.
+# See routing-matrix docs/MATRIX_CURATOR_GUIDE.md for schema details.
+
+name: claude-cli
+description: "Routes all roles through Claude Code CLI provider."
+updated: "2026-03-02"
+
+roles:
+  # ---------------------------------------------------------------------------
+  # Foundation Roles (required in every matrix)
+  # ---------------------------------------------------------------------------
+
+  general:
+    description: "Versatile catch-all, no specialization needed"
+    candidates:
+      - provider: claude
+        model: claude-sonnet-4-6
+
+  fast:
+    description: "Quick utility tasks -- parsing, classification, file ops, bulk work"
+    candidates:
+      - provider: claude
+        model: claude-haiku-4-5
+
+  # ---------------------------------------------------------------------------
+  # Coding Domain Roles
+  # ---------------------------------------------------------------------------
+
+  coding:
+    description: "Code generation, implementation, debugging"
+    candidates:
+      - provider: claude
+        model: claude-sonnet-4-6
+
+  ui-coding:
+    description: "Frontend/UI code -- components, layouts, styling, spatial reasoning"
+    candidates:
+      - provider: claude
+        model: claude-sonnet-4-6
+
+  security-audit:
+    description: "Vulnerability assessment, attack surface analysis, code auditing"
+    candidates:
+      - provider: claude
+        model: claude-sonnet-4-6
+        config:
+          reasoning_effort: high
+
+  # ---------------------------------------------------------------------------
+  # Cognitive Mode Roles
+  # ---------------------------------------------------------------------------
+
+  reasoning:
+    description: "Deep architectural reasoning, system design, complex multi-step analysis"
+    candidates:
+      - provider: claude
+        model: claude-opus-4-6
+        config:
+          reasoning_effort: high
+
+  critique:
+    description: "Analytical evaluation -- finding flaws in existing work"
+    candidates:
+      - provider: claude
+        model: claude-sonnet-4-6
+        config:
+          reasoning_effort: extra_high
+
+  creative:
+    description: "Design direction, aesthetic judgment, high-quality creative output"
+    candidates:
+      - provider: claude
+        model: claude-opus-4-6
+
+  writing:
+    description: "Long-form content -- documentation, marketing, case studies, storytelling"
+    candidates:
+      - provider: claude
+        model: claude-opus-4-6
+
+  research:
+    description: "Deep investigation, information synthesis across multiple sources"
+    candidates:
+      - provider: claude
+        model: claude-opus-4-6
+        config:
+          reasoning_effort: high
+
+  # ---------------------------------------------------------------------------
+  # Capability Roles
+  # ---------------------------------------------------------------------------
+
+  vision:
+    description: "Understanding visual input -- screenshots, diagrams, UI mockups"
+    candidates:
+      - provider: claude
+        model: claude-sonnet-4-6
+
+  image-gen:
+    # Claude has no native image generation. Best creative model for planning.
+    description: "Image generation (limited -- no native image API)"
+    candidates:
+      - provider: claude
+        model: claude-opus-4-6
+
+  # ---------------------------------------------------------------------------
+  # Operational Role
+  # ---------------------------------------------------------------------------
+
+  critical-ops:
+    description: "High-reliability operational tasks -- infrastructure, orchestration"
+    candidates:
+      - provider: claude
+        model: claude-opus-4-6

@@ -165,6 +165,16 @@ class Session(RedactedThinkingBlock):
         self.json |= {"id": value}
 
 
+# Canonical model IDs for routing matrix compatibility.
+# Maps CLI alias -> (full model ID, display name).
+# The CLI accepts both short aliases ("sonnet") and full versioned IDs.
+_CANONICAL_MODELS: dict[str, tuple[str, str]] = {
+    "opus": ("claude-opus-4-6", "Claude Opus 4.6"),
+    "sonnet": ("claude-sonnet-4-6", "Claude Sonnet 4.6"),
+    "haiku": ("claude-haiku-4-5", "Claude Haiku 4.5"),
+}
+
+
 class ClaudeChatResponse(ChatResponse):
     content_blocks: (
         list[
@@ -279,7 +289,7 @@ class ClaudeProvider:
             id="claude",
             display_name="Claude Code",
             credential_env_vars=[],
-            capabilities=["streaming", "tools", "thinking"],
+            capabilities=list(self._get_capabilities(self.default_model).capability_tags),
             defaults={
                 "model": self.default_model,
                 "max_tokens": self.max_tokens,
@@ -293,12 +303,12 @@ class ClaudeProvider:
 
     async def list_models(self) -> list[ModelInfo]:
         result = []
-        for model_id in ("sonnet", "opus", "haiku"):
-            caps = self._get_capabilities(model_id)
+        for alias, (canonical_id, display_name) in _CANONICAL_MODELS.items():
+            caps = self._get_capabilities(canonical_id)
             result.append(
                 ModelInfo(
-                    id=model_id,
-                    display_name=f"Claude {model_id.capitalize()}",
+                    id=canonical_id,
+                    display_name=display_name,
                     context_window=self.context_window,
                     max_output_tokens=caps.max_output_tokens,
                     capabilities=list(caps.capability_tags),
@@ -315,9 +325,12 @@ class ClaudeProvider:
 
         Delegates to shared utility from amplifier_core.utils.
         """
-        if max_length is None:
-            max_length = self.debug_truncate_length
-        return truncate_values(obj, max_length)
+        length: int = (
+            max_length
+            if max_length is not None
+            else (self.debug_truncate_length or 180)
+        )
+        return truncate_values(obj, length)
 
     @staticmethod
     def _detect_family(model_id: str) -> str:
@@ -364,7 +377,7 @@ class ClaudeProvider:
                 supports_thinking=True,
                 supports_adaptive_thinking=is_46_plus,
                 default_thinking_budget=64000 if is_46_plus else 32000,
-                capability_tags=("tools", "thinking", "streaming", "json_mode"),
+                capability_tags=("tools", "thinking", "streaming", "json_mode", "vision"),
             )
 
         if family == "sonnet":
@@ -373,7 +386,7 @@ class ClaudeProvider:
                 supports_thinking=True,
                 supports_adaptive_thinking=False,
                 default_thinking_budget=32000,
-                capability_tags=("tools", "thinking", "streaming", "json_mode"),
+                capability_tags=("tools", "thinking", "streaming", "json_mode", "vision"),
             )
 
         if family == "haiku":
@@ -391,11 +404,12 @@ class ClaudeProvider:
                         "streaming",
                         "json_mode",
                         "fast",
+                        "vision",
                     ),
                 )
             return ModelCapabilities(
                 family="haiku",
-                capability_tags=("tools", "streaming", "json_mode", "fast"),
+                capability_tags=("tools", "streaming", "json_mode", "fast", "vision"),
             )
 
         # Unknown family -- conservative defaults
@@ -714,11 +728,8 @@ class ClaudeProvider:
 
         thinking_budget = None
         interleaved_thinking_enabled = False
+        request_caps = self._get_capabilities(params["model"])
         if thinking_enabled:
-            # Resolve capabilities for the actual model in this request
-            # (may differ from instance default when callers pass model=...).
-            request_caps = self._get_capabilities(params["model"])
-
             # Guard: skip thinking for models that don't support it (e.g. Haiku).
             # Without this check we would send budget_tokens=0 which violates
             # the API's >= 1024 minimum.

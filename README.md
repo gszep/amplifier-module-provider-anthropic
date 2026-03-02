@@ -29,9 +29,11 @@ amplifier init  # select [3] Claude Code
 
 | Model | ID | Best For |
 |-------|------|----------|
-| Sonnet | `sonnet` | Default — balanced speed and capability |
-| Opus | `opus` | Complex reasoning, extended thinking |
-| Haiku | `haiku` | Fast responses |
+| Sonnet | `claude-sonnet-4-6` | Default — balanced speed and capability |
+| Opus | `claude-opus-4-6` | Complex reasoning, extended thinking |
+| Haiku | `claude-haiku-4-5` | Fast responses |
+
+The CLI also accepts short aliases (`sonnet`, `opus`, `haiku`) for `default_model` config.
 
 ## How It Works
 
@@ -42,6 +44,47 @@ This provider wraps the Claude Code CLI:
 - Responses are parsed for `[tool]:` blocks
 
 This gives Amplifier full control over the tool ecosystem while using Claude Code.
+
+## Routing Matrix Integration
+
+This provider mounts as `"claude"` (distinct from the official `"anthropic"` provider),
+so both can coexist. To use it with the [Routing Matrix](https://github.com/microsoft/amplifier-bundle-routing-matrix)
+system, add role overrides to your `settings.yaml`:
+
+```yaml
+# ~/.amplifier/settings.yaml (or .amplifier/settings.yaml)
+routing:
+  matrix: anthropic   # base matrix to extend
+  overrides:
+    general:
+      candidates:
+        - provider: claude
+          model: claude-sonnet-4-6
+        - base   # fall back to the base matrix's candidates
+    fast:
+      candidates:
+        - provider: claude
+          model: claude-haiku-4-5
+        - base
+    coding:
+      candidates:
+        - provider: claude
+          model: claude-sonnet-4-6
+        - base
+    reasoning:
+      candidates:
+        - provider: claude
+          model: claude-opus-4-6
+          config:
+            reasoning_effort: high
+        - base
+```
+
+The `base` keyword appends the original matrix's candidates for each role, giving
+automatic fallback to the direct API provider if the CLI is unavailable.
+
+A complete reference matrix covering all 13 roles is available at
+[`routing/claude-cli.yaml`](routing/claude-cli.yaml).
 
 ## Documentation
 
