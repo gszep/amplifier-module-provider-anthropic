@@ -68,43 +68,21 @@ This gives Amplifier full control over the tool ecosystem while using Claude Cod
 ## Routing Matrix Integration
 
 This provider mounts as `"claude"` (distinct from the official `"anthropic"` provider),
-so both can coexist. To use it with the [Routing Matrix](https://github.com/microsoft/amplifier-bundle-routing-matrix)
-system, add role overrides to your `settings.yaml`:
+so both can coexist. The `install.sh` script automatically installs a
+[`routing/claude.yaml`](routing/claude.yaml) matrix covering all 13 roles into the
+routing-matrix bundle cache.
+
+To activate it, set your `settings.yaml`:
 
 ```yaml
-# ~/.amplifier/settings.yaml (or .amplifier/settings.yaml)
+# ~/.amplifier/settings.yaml
 routing:
-  matrix: anthropic   # base matrix to extend
-  overrides:
-    general:
-      candidates:
-        - provider: claude
-          model: claude-sonnet-4-6
-        - base   # fall back to the base matrix's candidates
-    fast:
-      candidates:
-        - provider: claude
-          model: claude-haiku-4-5
-        - base
-    coding:
-      candidates:
-        - provider: claude
-          model: claude-sonnet-4-6
-        - base
-    reasoning:
-      candidates:
-        - provider: claude
-          model: claude-opus-4-6
-          config:
-            reasoning_effort: high
-        - base
+  matrix: claude
 ```
 
-The `base` keyword appends the original matrix's candidates for each role, giving
-automatic fallback to the direct API provider if the CLI is unavailable.
-
-A complete reference matrix covering all 13 roles is available at
-[`routing/claude.yaml`](routing/claude.yaml).
+The routing hook only discovers matrices from its own bundle's cache directory,
+which is why `install.sh` copies the file there. If you reinstall Amplifier or
+reset the cache, re-run `install.sh` to restore it.
 
 ## Documentation
 
