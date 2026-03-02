@@ -84,7 +84,7 @@ The `base` keyword appends the original matrix's candidates for each role, givin
 automatic fallback to the direct API provider if the CLI is unavailable.
 
 A complete reference matrix covering all 13 roles is available at
-[`routing/claude-cli.yaml`](routing/claude-cli.yaml).
+[`routing/claude.yaml`](routing/claude.yaml).
 
 ## Documentation
 

@@ -26,8 +26,8 @@ amplifier module add provider-claude --source git+https://github.com/gszep/ampli
 # so we copy the provider's reference matrix there with the name settings.yaml expects.
 ROUTING_CACHE=$(find ~/.amplifier/cache -maxdepth 1 -name 'amplifier-bundle-routing-matrix-*' -type d 2>/dev/null | head -1)
 PROVIDER_CACHE=$(find ~/.amplifier/cache -maxdepth 1 -name 'amplifier-module-provider-claude-*' -type d 2>/dev/null | head -1)
-if [ -n "$ROUTING_CACHE" ] && [ -n "$PROVIDER_CACHE" ] && [ -f "$PROVIDER_CACHE/routing/claude-cli.yaml" ]; then
-    cp "$PROVIDER_CACHE/routing/claude-cli.yaml" "$ROUTING_CACHE/routing/claude.yaml"
+if [ -n "$ROUTING_CACHE" ] && [ -n "$PROVIDER_CACHE" ] && [ -f "$PROVIDER_CACHE/routing/claude.yaml" ]; then
+    cp "$PROVIDER_CACHE/routing/claude.yaml" "$ROUTING_CACHE/routing/claude.yaml"
     echo "Installed claude routing matrix to $ROUTING_CACHE/routing/claude.yaml"
 else
     echo "Warning: Could not install claude routing matrix (cache dirs not found)"

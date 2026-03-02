@@ -1,4 +1,4 @@
-# Routing Matrix: claude-cli
+# Routing Matrix: claude
 #
 # Reference template for routing all roles through the Claude Code CLI provider.
 # Use when running via claude-agent-sdk (CLI subprocess) instead of
@@ -17,8 +17,8 @@
 # Required roles: "general" and "fast" must be defined in every matrix.
 # See routing-matrix docs/MATRIX_CURATOR_GUIDE.md for schema details.
 
-name: claude-cli
-description: "Routes all roles through Claude Code CLI provider."
+name: claude
+description: "Routes all roles through the Claude Code CLI provider."
 updated: "2026-03-02"
 
 roles:
