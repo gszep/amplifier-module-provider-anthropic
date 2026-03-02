@@ -12,13 +12,33 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 
 # Install Claude Code CLI
 curl -fsSL https://claude.ai/install.sh | bash
+```
 
-# Install Amplifier with the third-party provider
+### 2. Install Amplifier with Claude Provider
+
+The easiest way is to use the provided install script, which sets up Amplifier,
+registers the provider, and configures the routing matrix:
+
+```bash
+git clone https://github.com/gszep/amplifier-module-provider-claude.git
+cd amplifier-module-provider-claude
+bash install.sh
+```
+
+<details>
+<summary>Manual installation</summary>
+
+```bash
 uv tool install git+https://github.com/microsoft/amplifier
 amplifier module add provider-claude --source git+https://github.com/gszep/amplifier-module-provider-claude@main
 ```
 
-### 2. Configuration
+If using the routing matrix, you'll also need to copy the matrix file manually.
+See [Routing Matrix Integration](#routing-matrix-integration) below.
+
+</details>
+
+### 3. Configuration
 
 ```bash
 amplifier init  # select [3] Claude Code
