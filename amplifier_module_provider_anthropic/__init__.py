@@ -552,7 +552,13 @@ class AnthropicProvider:
                 supports_thinking=True,
                 supports_adaptive_thinking=is_46_plus,
                 default_thinking_budget=64000 if is_46_plus else 32000,
-                capability_tags=("tools", "thinking", "streaming", "json_mode", "vision"),
+                capability_tags=(
+                    "tools",
+                    "thinking",
+                    "streaming",
+                    "json_mode",
+                    "vision",
+                ),
             )
 
         if family == "sonnet":
@@ -563,7 +569,13 @@ class AnthropicProvider:
                 supports_thinking=True,
                 supports_adaptive_thinking=False,
                 default_thinking_budget=32000,
-                capability_tags=("tools", "thinking", "streaming", "json_mode", "vision"),
+                capability_tags=(
+                    "tools",
+                    "thinking",
+                    "streaming",
+                    "json_mode",
+                    "vision",
+                ),
             )
 
         if family == "haiku":
@@ -579,6 +591,44 @@ class AnthropicProvider:
 
         # Unknown family — conservative defaults
         return ModelCapabilities(family=family)
+
+    @staticmethod
+    def _is_cloudflare_challenge(error: AnthropicAPIStatusError) -> bool:
+        """Detect Cloudflare bot-management challenge responses.
+
+        Cloudflare interposes HTML challenge pages (HTTP 403) that look nothing
+        like Anthropic API errors.  Signals:
+
+        1. The SDK failed to parse the body as JSON (error.body is None).
+        2. The Content-Type is text/html (not application/json).
+        3. The raw response text contains Cloudflare markers.
+
+        Any combination of (1 + 2) or (1 + 3) is sufficient.  If the SDK
+        successfully parsed a JSON body, this is a real API error regardless
+        of other signals.
+        """
+        # If the SDK parsed a JSON body, this is a real API error
+        if getattr(error, "body", None) is not None:
+            return False
+
+        # Inspect the raw HTTP response for HTML / Cloudflare signals
+        response = getattr(error, "response", None)
+        if response is None:
+            return False
+
+        content_type = getattr(response, "headers", {}).get("content-type", "")
+        if "text/html" in content_type:
+            return True
+
+        # Fallback: scan response text for Cloudflare markers
+        text = getattr(response, "text", "") or ""
+        cf_markers = (
+            "Just a moment",
+            "cf-browser-verification",
+            "cloudflare",
+            "Checking if the site connection is secure",
+        )
+        return any(marker in text for marker in cf_markers)
 
     def _truncate_values(self, obj: Any, max_length: int | None = None) -> Any:
         """Recursively truncate string values in nested structures.
@@ -1269,6 +1319,23 @@ class AnthropicProvider:
                 body = getattr(e, "body", None)
                 error_msg = json.dumps(body) if body is not None else str(e)
                 if status == 403:
+                    # Distinguish Cloudflare bot challenges (transient) from
+                    # real API 403s (permanent).  Cloudflare returns HTML
+                    # challenge pages that the SDK can't parse as JSON, so
+                    # e.body is None and content-type is text/html.
+                    if self._is_cloudflare_challenge(e):
+                        logger.warning(
+                            "[PROVIDER] Cloudflare challenge detected (HTTP 403 "
+                            "with HTML body). Treating as transient — will retry."
+                        )
+                        raise KernelProviderUnavailableError(
+                            "Cloudflare bot challenge (transient 403 with HTML body). "
+                            "This typically resolves on retry.",
+                            provider="anthropic",
+                            model=params["model"],
+                            status_code=403,
+                            retryable=True,
+                        ) from e
                     raise KernelAccessDeniedError(
                         error_msg,
                         provider="anthropic",
