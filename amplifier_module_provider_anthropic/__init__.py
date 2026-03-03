@@ -398,6 +398,23 @@ class AnthropicProvider:
             self._default_headers = {"anthropic-beta": beta_header_value}
             logger.info(f"[PROVIDER] Beta headers enabled: {beta_header_value}")
 
+        # Shared rate-limit state file for cross-process awareness.
+        # All Anthropic provider instances (across processes, Docker containers
+        # sharing a filesystem, etc.) read this file before the per-emptive
+        # throttle check and write to it after every successful API response.
+        # This lets process B know that process A is almost out of tokens and
+        # should back off — even though they each have independent _RateLimitState
+        # instances.
+        # Set to "" to disable cross-process sharing entirely.
+        _default_shared_path = os.path.join(
+            os.path.expanduser("~"), ".amplifier", "rate-limit-state.json"
+        )
+        self._shared_state_path: str = str(
+            self.config.get("rate_limit_state_path", _default_shared_path)
+        )
+        self._last_shared_state_read: float = 0.0  # epoch time of last file read
+        self._last_written_state: dict[str, Any] = {}  # last written content (for change detection)
+
         # Track tool call IDs that have been repaired with synthetic results.
         # This prevents infinite loops when the same missing tool results are
         # detected repeatedly across LLM iterations (since synthetic results
@@ -677,6 +694,127 @@ class AnthropicProvider:
             "Checking if the site connection is secure",
         )
         return any(marker in text for marker in cf_markers)
+
+    def _write_shared_rate_limit_state(self, rate_limit_info: dict[str, Any]) -> None:
+        """Atomically write rate-limit header data to the shared cross-process file.
+
+        Uses write-to-tmp + os.rename() so concurrent readers never see a partial
+        file.  Only writes if the rate-limit data actually changed (debounce by
+        content equality) to avoid excessive I/O on every response.
+
+        Wrapped entirely in try/except — file I/O failures must NEVER crash the
+        provider.  The feature is completely silent when disabled (empty path).
+        """
+        if not self._shared_state_path:
+            return
+        try:
+            _rate_fields = (
+                "requests_remaining",
+                "requests_limit",
+                "requests_reset",
+                "input_tokens_remaining",
+                "input_tokens_limit",
+                "input_tokens_reset",
+                "output_tokens_remaining",
+                "output_tokens_limit",
+                "output_tokens_reset",
+            )
+            # Build the comparable payload (excludes volatile metadata)
+            comparable: dict[str, Any] = {}
+            for fname in _rate_fields:
+                val = rate_limit_info.get(fname)
+                if val is not None:
+                    comparable[fname] = val
+
+            # Skip write if nothing changed (debounce)
+            if comparable == self._last_written_state:
+                return
+
+            state: dict[str, Any] = {
+                "updated_at": time.time(),
+                "updated_by_pid": os.getpid(),
+                **comparable,
+            }
+
+            path = self._shared_state_path
+            tmp_path = path + ".tmp"
+            os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+            with open(tmp_path, "w") as f:
+                json.dump(state, f)
+            os.rename(tmp_path, path)
+            self._last_written_state = comparable
+        except Exception:
+            pass  # Never crash on I/O errors
+
+    def _read_shared_rate_limit_state(self) -> None:
+        """Read cross-process rate-limit state and merge it into local state.
+
+        Only re-reads the file at most once per second (simple timestamp cache)
+        to avoid hammering the filesystem on every throttle check.
+
+        Merge strategy for *remaining* fields: take the LOWER value between local
+        and shared state (conservative — don't assume capacity we can't confirm).
+        For *limit* and *reset* fields: adopt the shared value only when local has
+        no data yet.
+
+        Ignores stale data (file older than 120 seconds) since stale rate-limit
+        windows are meaningless.
+
+        Wrapped entirely in try/except — file I/O failures must NEVER crash the
+        provider.
+        """
+        if not self._shared_state_path:
+            return
+        now = time.time()
+        if now - self._last_shared_state_read < 1.0:
+            return  # Cache: don't re-read within 1 second
+        self._last_shared_state_read = now
+        try:
+            with open(self._shared_state_path) as f:
+                data: dict[str, Any] = json.load(f)
+
+            updated_at = data.get("updated_at", 0)
+            if now - updated_at > 120:
+                return  # Stale — ignore
+
+            # Merge remaining values: always take the lower of local vs shared
+            _remaining_fields = (
+                "requests_remaining",
+                "input_tokens_remaining",
+                "output_tokens_remaining",
+            )
+            # Limit / reset fields: adopt shared only when local is absent
+            _limit_reset_fields = (
+                "requests_limit",
+                "requests_reset",
+                "input_tokens_limit",
+                "input_tokens_reset",
+                "output_tokens_limit",
+                "output_tokens_reset",
+            )
+            merged: dict[str, Any] = {}
+            for fname in _remaining_fields:
+                shared_val = data.get(fname)
+                local_val = getattr(self._rate_limit_state, fname)
+                if shared_val is not None and local_val is not None:
+                    merged[fname] = min(int(shared_val), int(local_val))
+                elif shared_val is not None:
+                    merged[fname] = int(shared_val)
+                # else: keep local value (don't override with absent shared data)
+
+            for fname in _limit_reset_fields:
+                shared_val = data.get(fname)
+                local_val = getattr(self._rate_limit_state, fname)
+                if shared_val is not None and local_val is None:
+                    merged[fname] = shared_val
+
+            if merged:
+                self._rate_limit_state.update_from_headers(merged)
+
+        except FileNotFoundError:
+            pass  # Normal: file doesn't exist yet
+        except Exception:
+            pass  # Never crash on I/O errors
 
     def _truncate_values(self, obj: Any, max_length: int | None = None) -> Any:
         """Recursively truncate string values in nested structures.
@@ -1536,6 +1674,11 @@ class AnthropicProvider:
                 finally:
                     _active_requests -= 1
 
+        # Read shared rate-limit state from cross-process file before the
+        # throttle check so we also account for capacity consumed by sibling
+        # processes on the same API key (e.g. parallel sessions, Docker containers).
+        self._read_shared_rate_limit_state()
+
         # Pre-emptive throttle check: if we're running low on any rate limit
         # dimension, inject a delay and warn the user before hitting a 429.
         if self._throttle_threshold > 0:
@@ -1605,6 +1748,9 @@ class AnthropicProvider:
             rate_limit_info = captured_rate_limit_info
             # Update throttle state for next request's pre-emptive check
             self._rate_limit_state.update_from_headers(rate_limit_info)
+            # Write shared state so sibling processes can see current capacity.
+            if rate_limit_info:
+                self._write_shared_rate_limit_state(rate_limit_info)
             if rate_limit_info:
                 tokens_remaining = rate_limit_info.get("tokens_remaining")
                 tokens_limit = rate_limit_info.get("tokens_limit")

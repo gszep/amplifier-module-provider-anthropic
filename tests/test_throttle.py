@@ -65,6 +65,9 @@ def _make_provider(
             "retry_jitter": False,
             "throttle_threshold": throttle_threshold,
             "throttle_delay": throttle_delay,
+            # Disable cross-process shared state so these unit tests only see
+            # the local _RateLimitState that they seed directly.
+            "rate_limit_state_path": "",
         },
     )
     provider.coordinator = cast(ModuleCoordinator, FakeCoordinator())
