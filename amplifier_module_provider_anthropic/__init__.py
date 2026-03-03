@@ -154,6 +154,44 @@ class _RateLimitState:
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Process-wide concurrency gate
+# ---------------------------------------------------------------------------
+# Shared across ALL AnthropicProvider instances in this process (including
+# parent + delegated child sessions). Prevents blast patterns that trigger
+# Cloudflare bot detection when many sessions delegate simultaneously.
+# Created lazily on the first API call; keyed by event loop so that tests
+# using asyncio.run() get fresh semaphores rather than inheriting stale state.
+
+_process_semaphore: asyncio.Semaphore | None = None
+_process_semaphore_loop: Any = None  # asyncio.AbstractEventLoop
+_process_semaphore_max: int = 0
+_active_requests: int = 0  # currently holding semaphore (executing)
+_waiting_requests: int = 0  # waiting to acquire semaphore
+
+
+async def _get_process_semaphore(max_concurrent: int) -> asyncio.Semaphore | None:
+    """Get or create the process-wide concurrency semaphore.
+
+    Returns ``None`` when ``max_concurrent <= 0`` (semaphore disabled).
+    Recreates the semaphore when called from a different event loop so that
+    unit tests using ``asyncio.run()`` always get a fresh, valid semaphore.
+    """
+    global _process_semaphore, _process_semaphore_loop, _process_semaphore_max
+    if max_concurrent <= 0:
+        return None
+    current_loop = asyncio.get_running_loop()
+    if (
+        _process_semaphore is None
+        or _process_semaphore_loop is not current_loop
+        or _process_semaphore_max != max_concurrent
+    ):
+        _process_semaphore = asyncio.Semaphore(max_concurrent)
+        _process_semaphore_loop = current_loop
+        _process_semaphore_max = max_concurrent
+    return _process_semaphore
+
+
 # Beta header constants — single source of truth for experimental feature headers
 BETA_HEADER_1M_CONTEXT = "context-1m-2025-08-07"
 BETA_HEADER_INTERLEAVED_THINKING = "interleaved-thinking-2025-05-14"
@@ -303,6 +341,16 @@ class AnthropicProvider:
         self._throttle_threshold = float(self.config.get("throttle_threshold", 0.02))
         self._throttle_delay = float(self.config.get("throttle_delay", 1.0))
         self._rate_limit_state = _RateLimitState()
+
+        # Process-wide concurrency gate.
+        # Limits how many API calls this process has in-flight simultaneously,
+        # shared across ALL provider instances (parent + delegated child sessions).
+        # This prevents blast patterns (e.g. parallel: true recipes spawning 20+
+        # concurrent calls) that trigger Cloudflare bot-detection on api.anthropic.com.
+        # Set to 0 to disable the semaphore entirely.
+        self._max_concurrent_requests = int(
+            self.config.get("max_concurrent_requests", 5)
+        )
 
         # Use streaming API by default to support large context windows (Anthropic requires streaming
         # for operations that may take > 10 minutes, e.g. with 300k+ token contexts)
@@ -1328,6 +1376,19 @@ class AnthropicProvider:
                             "[PROVIDER] Cloudflare challenge detected (HTTP 403 "
                             "with HTML body). Treating as transient — will retry."
                         )
+                        if self.coordinator and hasattr(self.coordinator, "hooks"):
+                            await self.coordinator.hooks.emit(
+                                "provider:cloudflare_challenge",
+                                {
+                                    "provider": "anthropic",
+                                    "model": params["model"],
+                                    "active_requests": _active_requests,
+                                    "waiting_requests": _waiting_requests,
+                                    "max_concurrent": self._max_concurrent_requests,
+                                    "process_id": os.getpid(),
+                                    "timestamp": time.time(),
+                                },
+                            )
                         raise KernelProviderUnavailableError(
                             "Cloudflare bot challenge (transient 403 with HTML body). "
                             "This typically resolves on retry.",
@@ -1421,6 +1482,60 @@ class AnthropicProvider:
                     },
                 )
 
+        async def _do_complete_guarded():
+            """Semaphore-gated wrapper around _do_complete with concurrency logging.
+
+            Acquires the process-wide concurrency semaphore before each API call
+            attempt so that at most ``max_concurrent_requests`` calls are in-flight
+            simultaneously across all provider instances in this process.
+
+            This is the function passed to retry_with_backoff so that:
+            - the semaphore is *released* between retry attempts (during backoff sleep)
+            - each fresh attempt must re-acquire before hitting the network
+            """
+            global _active_requests, _waiting_requests
+            sem = await _get_process_semaphore(self._max_concurrent_requests)
+            if sem is not None:
+                _waiting_requests += 1
+                async with sem:
+                    _waiting_requests -= 1
+                    _active_requests += 1
+                    try:
+                        if self.coordinator and hasattr(self.coordinator, "hooks"):
+                            await self.coordinator.hooks.emit(
+                                "provider:concurrency",
+                                {
+                                    "provider": "anthropic",
+                                    "model": params["model"],
+                                    "active_requests": _active_requests,
+                                    "waiting_requests": _waiting_requests,
+                                    "max_concurrent": self._max_concurrent_requests,
+                                    "process_id": os.getpid(),
+                                },
+                            )
+                        return await _do_complete()
+                    finally:
+                        _active_requests -= 1
+            else:
+                # Semaphore disabled (max_concurrent_requests=0) — still log
+                _active_requests += 1
+                try:
+                    if self.coordinator and hasattr(self.coordinator, "hooks"):
+                        await self.coordinator.hooks.emit(
+                            "provider:concurrency",
+                            {
+                                "provider": "anthropic",
+                                "model": params["model"],
+                                "active_requests": _active_requests,
+                                "waiting_requests": _waiting_requests,
+                                "max_concurrent": 0,
+                                "process_id": os.getpid(),
+                            },
+                        )
+                    return await _do_complete()
+                finally:
+                    _active_requests -= 1
+
         # Pre-emptive throttle check: if we're running low on any rate limit
         # dimension, inject a delay and warn the user before hitting a 429.
         if self._throttle_threshold > 0:
@@ -1476,7 +1591,7 @@ class AnthropicProvider:
 
         try:
             response = await retry_with_backoff(
-                _do_complete,
+                _do_complete_guarded,
                 self._retry_config,
                 on_retry=_on_retry,
             )
