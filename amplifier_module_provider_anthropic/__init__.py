@@ -40,7 +40,7 @@ from amplifier_core.llm_errors import (
     ProviderUnavailableError as KernelProviderUnavailableError,
 )
 from amplifier_core.llm_errors import RateLimitError as KernelRateLimitError
-from amplifier_core.utils import truncate_values
+from amplifier_core.utils import redact_secrets
 from amplifier_core.utils.retry import RetryConfig, retry_with_backoff
 from amplifier_core.message_models import ChatRequest
 from amplifier_core.message_models import ChatResponse
@@ -301,15 +301,7 @@ class AnthropicProvider:
         )
         self.temperature = self.config.get("temperature", 0.7)
         self.priority = self.config.get("priority", 100)  # Store priority for selection
-        self.debug = self.config.get(
-            "debug", False
-        )  # Enable full request/response logging
-        self.raw_debug = self.config.get(
-            "raw_debug", False
-        )  # Enable ultra-verbose raw API I/O logging
-        self.debug_truncate_length = self.config.get(
-            "debug_truncate_length", 180
-        )  # Max string length in debug logs
+        self.raw = self.config.get("raw", False)  # Include raw payload in events
         self.timeout = self.config.get(
             "timeout", 600.0
         )  # API timeout in seconds (default 5 minutes)
@@ -812,18 +804,6 @@ class AnthropicProvider:
         except Exception:
             pass  # Never crash on I/O errors
 
-    def _truncate_values(self, obj: Any, max_length: int | None = None) -> Any:
-        """Recursively truncate string values in nested structures.
-
-        Delegates to shared utility from amplifier_core.utils.
-        """
-        length: int = (
-            max_length
-            if max_length is not None
-            else (self.debug_truncate_length or 180)
-        )
-        return truncate_values(obj, length)
-
     def _find_missing_tool_results(
         self, messages: list[Message]
     ) -> list[tuple[int, str, str, dict]]:
@@ -1114,7 +1094,7 @@ class AnthropicProvider:
             ChatResponse with content blocks
         """
         logger.debug(
-            f"Received ChatRequest with {len(request.messages)} messages (debug={self.debug})"
+            f"Received ChatRequest with {len(request.messages)} messages (raw={self.raw})"
         )
 
         # Separate messages by role
@@ -1346,41 +1326,18 @@ class AnthropicProvider:
 
         # Emit llm:request event
         if self.coordinator and hasattr(self.coordinator, "hooks"):
-            # INFO level: Summary only
-            await self.coordinator.hooks.emit(
-                "llm:request",
-                {
-                    "provider": "anthropic",
-                    "model": params["model"],
-                    "message_count": len(params["messages"]),
-                    "has_system": bool(system_blocks),
-                    "thinking_enabled": thinking_enabled,
-                    "thinking_budget": thinking_budget,
-                    "interleaved_thinking": interleaved_thinking_enabled,
-                },
-            )
-
-            # DEBUG level: Full request payload with truncated values (if debug enabled)
-            if self.debug:
-                await self.coordinator.hooks.emit(
-                    "llm:request:debug",
-                    {
-                        "lvl": "DEBUG",
-                        "provider": "anthropic",
-                        "request": self._truncate_values(params),
-                    },
-                )
-
-            # RAW level: Complete params dict as sent to Anthropic API (if debug AND raw_debug enabled)
-            if self.debug and self.raw_debug:
-                await self.coordinator.hooks.emit(
-                    "llm:request:raw",
-                    {
-                        "lvl": "DEBUG",
-                        "provider": "anthropic",
-                        "params": params,  # Complete untruncated params
-                    },
-                )
+            request_payload: dict[str, Any] = {
+                "provider": "anthropic",
+                "model": params["model"],
+                "message_count": len(params["messages"]),
+                "has_system": bool(system_blocks),
+                "thinking_enabled": thinking_enabled,
+                "thinking_budget": thinking_budget,
+                "interleaved_thinking": interleaved_thinking_enabled,
+            }
+            if self.raw:
+                request_payload["raw"] = redact_secrets(params)
+            await self.coordinator.hooks.emit("llm:request", request_payload)
 
         start_time = time.time()
 
@@ -1789,32 +1746,9 @@ class AnthropicProvider:
                 if rate_limit_info:
                     response_event["rate_limits"] = rate_limit_info
 
+                if self.raw:
+                    response_event["raw"] = redact_secrets(response.model_dump())
                 await self.coordinator.hooks.emit("llm:response", response_event)
-
-                # DEBUG level: Full response with truncated values (if debug enabled)
-                if self.debug:
-                    response_dict = response.model_dump()  # Pydantic model → dict
-                    await self.coordinator.hooks.emit(
-                        "llm:response:debug",
-                        {
-                            "lvl": "DEBUG",
-                            "provider": "anthropic",
-                            "response": self._truncate_values(response_dict),
-                            "status": "ok",
-                            "duration_ms": elapsed_ms,
-                        },
-                    )
-
-                # RAW level: Complete response object from Anthropic API (if debug AND raw_debug enabled)
-                if self.debug and self.raw_debug:
-                    await self.coordinator.hooks.emit(
-                        "llm:response:raw",
-                        {
-                            "lvl": "DEBUG",
-                            "provider": "anthropic",
-                            "response": response.model_dump(),  # Complete untruncated response
-                        },
-                    )
 
             # Convert to ChatResponse
             return self._convert_to_chat_response(response)
