@@ -34,7 +34,48 @@ from amplifier_core.message_models import (  # type: ignore
     ToolCallBlock,
     Usage,
 )
-from amplifier_core.utils import truncate_values
+from amplifier_core.utils import redact_secrets
+
+try:
+    from amplifier_core.llm_errors import LLMError as KernelLLMError
+    from amplifier_core.llm_errors import LLMTimeoutError as KernelLLMTimeoutError
+    from amplifier_core.llm_errors import (
+        ProviderUnavailableError as KernelProviderUnavailableError,
+    )
+    from amplifier_core.llm_errors import RateLimitError as KernelRateLimitError
+    from amplifier_core.utils.retry import RetryConfig
+    from amplifier_core.utils.retry import retry_with_backoff as _retry_with_backoff
+
+    _HAS_RETRY = True
+except ImportError:
+    _HAS_RETRY = False
+
+    class KernelLLMError(Exception):  # type: ignore[no-redef]
+        def __init__(self, message: str, **kwargs: Any) -> None:
+            super().__init__(message)
+            self.retryable = kwargs.get("retryable", False)
+            self.provider = kwargs.get("provider")
+            self.model = kwargs.get("model")
+            self.retry_after = kwargs.get("retry_after")
+            self.delay_multiplier = kwargs.get("delay_multiplier", 1.0)
+
+    class KernelLLMTimeoutError(KernelLLMError):  # type: ignore[no-redef]
+        pass
+
+    class KernelRateLimitError(KernelLLMError):  # type: ignore[no-redef]
+        pass
+
+    class KernelProviderUnavailableError(KernelLLMError):  # type: ignore[no-redef]
+        pass
+
+    class RetryConfig:  # type: ignore[no-redef]
+        def __init__(self, **kwargs: Any) -> None:
+            self.max_retries: int = kwargs.get("max_retries", 5)
+            self.initial_delay: float = kwargs.get("initial_delay", 1.0)
+            self.max_delay: float = kwargs.get("max_delay", 60.0)
+            self.jitter: float = kwargs.get("jitter", 0.2)
+
+
 from anthropic import AsyncAnthropic
 from anthropic.types import ThinkingBlock as AnthropicThinkingBlock  # type: ignore
 from anthropic.types import ToolUseBlock as AnthropicToolUseBlock  # type: ignore
@@ -49,6 +90,19 @@ from claude_agent_sdk.types import ClaudeAgentOptions  # type: ignore
 from pydantic import ValidationError
 
 logger = logging.getLogger(__name__)
+
+
+async def retry_with_backoff(
+    operation: Any,
+    config: Any = None,
+    *,
+    on_retry: Any = None,
+) -> Any:
+    """Wrapper that uses amplifier-core retry when available, else single-attempt fallback."""
+    if _HAS_RETRY:
+        return await _retry_with_backoff(operation, config, on_retry=on_retry)
+    return await operation()
+
 
 # SDK patch: tolerate unknown message types (e.g. "rate_limit_event") from CLI v2.1.42+.
 # Tracking: https://github.com/anthropics/claude-agent-sdk-python/issues/583
@@ -172,10 +226,7 @@ async def mount(coordinator: ModuleCoordinator, config: dict[str, Any] | None = 
     logger.info("Mounted ClaudeProvider")
 
     async def cleanup():
-        try:
-            await asyncio.shield(asyncio.sleep(0))  # placeholder for any async cleanup
-        except (asyncio.CancelledError, Exception):
-            pass
+        await provider.close()
 
     return cleanup
 
@@ -213,9 +264,7 @@ class ClaudeProvider:
         )
 
         self.priority: int = self.config.get("priority", 100)
-        self.debug: bool = self.config.get("debug", False)
-        self.raw_debug: bool = self.config.get("raw_debug", False)
-        self.debug_truncate_length: int = self.config.get("debug_truncate_length", 180)
+        self.raw: bool = self.config.get("raw", False)
 
         self.timeout: float = self.config.get("timeout", 600.0)
         self.use_streaming = True
@@ -225,6 +274,16 @@ class ClaudeProvider:
         self._available_tool_names: set[str] = set()
         self._session: Session = Session()
         self._client: AsyncAnthropic | None = None
+
+        self._retry_config = RetryConfig(
+            max_retries=self.config.get("max_retries", 5),
+            initial_delay=self.config.get("min_retry_delay", 1.0),
+            max_delay=self.config.get("max_retry_delay", 60.0),
+            jitter=bool(self.config.get("retry_jitter", True)),
+        )
+        self._overloaded_delay_multiplier: float = self.config.get(
+            "overloaded_delay_multiplier", 10.0
+        )
 
     @property
     def client(self) -> AsyncAnthropic:
@@ -251,6 +310,14 @@ class ClaudeProvider:
             config_fields=[],
         )
 
+    async def close(self) -> None:
+        """Close the underlying Anthropic client to prevent resource leaks."""
+        if self._client is not None:
+            try:
+                await asyncio.shield(self._client.close())
+            except asyncio.CancelledError:
+                pass
+
     async def list_models(self) -> list[ModelInfo]:
         result = []
         for alias, (canonical_id, display_name) in _CANONICAL_MODELS.items():
@@ -269,14 +336,6 @@ class ClaudeProvider:
                 )
             )
         return result
-
-    def _truncate_values(self, obj: Any, max_length: int | None = None) -> Any:
-        length: int = (
-            max_length
-            if max_length is not None
-            else (self.debug_truncate_length or 180)
-        )
-        return truncate_values(obj, length)
 
     @staticmethod
     def _detect_family(model_id: str) -> str:
@@ -507,7 +566,7 @@ class ClaudeProvider:
         request.messages = self._get_recent_messages(request.messages)
 
         logger.debug(
-            f"Received ChatRequest with {len(request.messages)} messages (debug={self.debug})"
+            f"Received ChatRequest with {len(request.messages)} messages (raw={self.raw})"
         )
 
         system_msgs = [m for m in request.messages if m.role == "system"]
@@ -626,112 +685,121 @@ class ClaudeProvider:
             params["stop_sequences"] = stop_sequences
 
         if self.coordinator and hasattr(self.coordinator, "hooks"):
-            await self.coordinator.hooks.emit(
-                "llm:request",
-                {
-                    "provider": "anthropic",
-                    "model": params["model"],
-                    "message_count": len(params["messages"]),
-                    "has_system": bool(system_blocks),
-                    "thinking_enabled": thinking_enabled,
-                    "thinking_budget": thinking_budget,
-                    "interleaved_thinking": interleaved_thinking_enabled,
-                },
-            )
-
-            if self.debug:
-                await self.coordinator.hooks.emit(
-                    "llm:request:debug",
-                    {
-                        "lvl": "DEBUG",
-                        "provider": "anthropic",
-                        "request": self._truncate_values(params),
-                    },
-                )
-
-            if self.debug and self.raw_debug:
-                await self.coordinator.hooks.emit(
-                    "llm:request:raw",
-                    {
-                        "lvl": "DEBUG",
-                        "provider": "anthropic",
-                        "params": params,
-                    },
-                )
+            request_payload: dict[str, Any] = {
+                "provider": "anthropic",
+                "model": params["model"],
+                "message_count": len(params["messages"]),
+                "has_system": bool(system_blocks),
+                "thinking_enabled": thinking_enabled,
+                "thinking_budget": thinking_budget,
+                "interleaved_thinking": interleaved_thinking_enabled,
+            }
+            if self.raw:
+                request_payload["raw"] = redact_secrets(params)
+            await self.coordinator.hooks.emit("llm:request", request_payload)
 
         start_time = time.time()
-        _client_ref: ClaudeSDKClient | None = None
+        model = params["model"]
+
+        async def _do_complete() -> ParsedMessage:
+            _client_ref: ClaudeSDKClient | None = None
+            try:
+                async with asyncio.timeout(self.timeout):
+                    async with ClaudeSDKClient(
+                        options=ClaudeAgentOptions(
+                            tools=[],  # disable built-in tools
+                            model=self.default_model,
+                            resume=self._session.id,
+                            system_prompt="---",  # system prompt is passed in messages
+                            max_thinking_tokens=self.max_thinking_tokens,
+                            betas=self._beta_headers,
+                        )
+                    ) as client:
+                        _client_ref = client
+                        prompt = self._convert_prompt_from_request_params(params)
+                        await client.query(prompt, session_id=self._session.id)
+                        result = await self._parse_response(client, model)
+
+                        try:
+                            transport = client._transport
+                            await transport.end_input()
+                            if hasattr(transport, "_process") and transport._process:
+                                await asyncio.wait_for(
+                                    transport._process.wait(), timeout=5.0
+                                )
+                        except (asyncio.TimeoutError, Exception):
+                            pass
+
+                        return result
+
+            except TimeoutError:
+                self._force_kill_subprocess(_client_ref)
+                raise KernelLLMTimeoutError(
+                    f"Request timed out after {self.timeout}s",
+                    provider="claude",
+                    model=model,
+                    retryable=True,
+                ) from None
+
+            except asyncio.CancelledError:
+                self._force_kill_subprocess(_client_ref)
+                raise
+
+            except KernelLLMError:
+                self._force_kill_subprocess(_client_ref)
+                raise
+
+            except Exception as e:
+                self._force_kill_subprocess(_client_ref)
+                body = getattr(e, "body", None)
+                error_msg = json.dumps(body) if body is not None else str(e)
+                if not error_msg:
+                    error_msg = f"{type(e).__name__}: (no message)"
+                raise KernelLLMError(
+                    error_msg,
+                    provider="claude",
+                    model=model,
+                    retryable=True,
+                ) from e
+
+        async def _on_retry(attempt: int, delay: float, error: KernelLLMError) -> None:
+            logger.warning(
+                "[PROVIDER] Retry %d/%d in %.1fs: %s",
+                attempt,
+                self._retry_config.max_retries,
+                delay,
+                error,
+            )
+            if self.coordinator and hasattr(self.coordinator, "hooks"):
+                await self.coordinator.hooks.emit(
+                    "provider:retry",
+                    {
+                        "provider": "claude",
+                        "model": model,
+                        "attempt": attempt,
+                        "max_retries": self._retry_config.max_retries,
+                        "delay": delay,
+                        "error": str(error),
+                        "retry_after": getattr(error, "retry_after", None),
+                    },
+                )
 
         try:
-            async with asyncio.timeout(self.timeout):
-                async with ClaudeSDKClient(
-                    options=ClaudeAgentOptions(
-                        tools=[],  # disable built-in tools
-                        model=self.default_model,
-                        resume=self._session.id,
-                        system_prompt="---",  # system prompt is passed in messages
-                        max_thinking_tokens=self.max_thinking_tokens,
-                        betas=self._beta_headers,
-                    )
-                ) as client:
-                    _client_ref = client
-                    prompt = self._convert_prompt_from_request_params(params)
-                    await client.query(prompt, session_id=self._session.id)
-                    response = await self._parse_response(client)
-
-                    try:
-                        transport = client._transport
-                        await transport.end_input()
-                        if hasattr(transport, "_process") and transport._process:
-                            await asyncio.wait_for(
-                                transport._process.wait(), timeout=5.0
-                            )
-                    except (asyncio.TimeoutError, Exception):
-                        pass
-
-        except TimeoutError:
-            self._force_kill_subprocess(_client_ref)
+            response = await retry_with_backoff(
+                _do_complete, self._retry_config, on_retry=_on_retry
+            )
+        except (KernelLLMError, asyncio.CancelledError):
             elapsed_ms = int((time.time() - start_time) * 1000)
-            error_msg = f"Request timed out after {self.timeout}s"
-            logger.error(f"[PROVIDER] Anthropic API error: {error_msg}")
-
             if self.coordinator and hasattr(self.coordinator, "hooks"):
                 await self.coordinator.hooks.emit(
                     "llm:response",
                     {
                         "provider": "anthropic",
-                        "model": params["model"],
+                        "model": model,
                         "status": "error",
                         "duration_ms": elapsed_ms,
-                        "error": error_msg,
                     },
                 )
-            raise TimeoutError(error_msg) from None
-
-        except asyncio.CancelledError:
-            self._force_kill_subprocess(_client_ref)
-            logger.warning("[PROVIDER] Request cancelled - CLI subprocess killed")
-            raise
-
-        except Exception as e:
-            self._force_kill_subprocess(_client_ref)
-            elapsed_ms = int((time.time() - start_time) * 1000)
-            error_msg = str(e) or f"{type(e).__name__}: (no message)"
-            logger.error(f"[PROVIDER] Anthropic API error: {error_msg}")
-
-            if self.coordinator and hasattr(self.coordinator, "hooks"):
-                await self.coordinator.hooks.emit(
-                    "llm:response",
-                    {
-                        "provider": "anthropic",
-                        "model": params["model"],
-                        "status": "error",
-                        "duration_ms": elapsed_ms,
-                        "error": error_msg,
-                    },
-                )
-            if not str(e):
-                raise type(e)(error_msg) from e
             raise
 
         elapsed_ms = int((time.time() - start_time) * 1000)
@@ -760,30 +828,9 @@ class ClaudeProvider:
                 "duration_ms": elapsed_ms,
             }
 
+            if self.raw:
+                response_event["raw"] = redact_secrets(response.model_dump())
             await self.coordinator.hooks.emit("llm:response", response_event)
-
-            if self.debug:
-                response_dict = response.model_dump()
-                await self.coordinator.hooks.emit(
-                    "llm:response:debug",
-                    {
-                        "lvl": "DEBUG",
-                        "provider": "anthropic",
-                        "response": self._truncate_values(response_dict),
-                        "status": "ok",
-                        "duration_ms": elapsed_ms,
-                    },
-                )
-
-            if self.debug and self.raw_debug:
-                await self.coordinator.hooks.emit(
-                    "llm:response:raw",
-                    {
-                        "lvl": "DEBUG",
-                        "provider": "anthropic",
-                        "response": response.model_dump(),
-                    },
-                )
 
         return self._convert_to_chat_response(response)
 
@@ -1423,17 +1470,46 @@ class ClaudeProvider:
 
         return tool_blocks, cleaned
 
-    async def _parse_response(self, client: ClaudeSDKClient) -> ParsedMessage:
+    def _classify_and_raise_error(self, error_text: str, model: str) -> None:
+        """Classify a CLI error message and raise the appropriate kernel error type."""
+        lower = error_text.lower()
+        if "rate limit" in lower or "rate_limit" in lower or "429" in lower:
+            raise KernelRateLimitError(
+                error_text,
+                provider="claude",
+                model=model,
+                retryable=True,
+            )
+        elif "overloaded" in lower or "529" in lower or "capacity" in lower:
+            raise KernelProviderUnavailableError(
+                error_text,
+                provider="claude",
+                model=model,
+                retryable=True,
+                delay_multiplier=self._overloaded_delay_multiplier,
+            )
+        else:
+            raise KernelLLMError(
+                error_text,
+                provider="claude",
+                model=model,
+                retryable=True,
+            )
 
-        model: str = ""
+    async def _parse_response(
+        self, client: ClaudeSDKClient, model: str
+    ) -> ParsedMessage:
+
+        response_model: str = ""
         content: list[ParsedContentBlock] = []
         usage = AnthropicUsage(input_tokens=0, output_tokens=0)
         received_result = False
+        error_result: str | None = None
 
         async for message in client.receive_response():
             match message:
                 case claude_agent_sdk.types.AssistantMessage():
-                    model = message.model
+                    response_model = message.model
                     for block in message.content:
                         match block:
                             case claude_agent_sdk.types.TextBlock():
@@ -1488,8 +1564,10 @@ class ClaudeProvider:
                         )
 
                     if message.is_error:
+                        error_result = str(message.result or "")
                         logger.warning(
-                            f"[PROVIDER] SDK response indicates error: {message.result}"
+                            "[PROVIDER] SDK response indicates error: %s",
+                            error_result,
                         )
 
                 case (
@@ -1507,10 +1585,16 @@ class ClaudeProvider:
                     )
 
         if not received_result:
-            raise RuntimeError(
+            raise KernelLLMError(
                 "[PROVIDER] CLI subprocess ended without delivering a ResultMessage. "
-                "The subprocess may have crashed or its stdout pipe was blocked."
+                "The subprocess may have crashed or its stdout pipe was blocked.",
+                provider="claude",
+                model=model,
+                retryable=True,
             )
+
+        if error_result:
+            self._classify_and_raise_error(error_result, model)
 
         stop_reason = (
             "tool_use"
@@ -1521,7 +1605,7 @@ class ClaudeProvider:
         return ParsedMessage(
             id=self._session.id,
             content=content,
-            model=model,
+            model=response_model or model,
             role="assistant",
             type="message",
             usage=usage,
