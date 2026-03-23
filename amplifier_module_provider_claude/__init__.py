@@ -1580,8 +1580,8 @@ class ClaudeProvider:
                     )
 
                 case _:
-                    raise NotImplementedError(
-                        f"[PROVIDER] Unknown message type from SDK: {type(message)}"
+                    logger.debug(
+                        f"[PROVIDER] SDK message type ignored: {type(message)}"
                     )
 
         if not received_result:
