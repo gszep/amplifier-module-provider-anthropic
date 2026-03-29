@@ -6,6 +6,7 @@ import asyncio
 
 import json
 import logging
+from pathlib import Path
 import re
 import shutil
 import time
@@ -221,6 +222,29 @@ async def mount(coordinator: ModuleCoordinator, config: dict[str, Any] | None = 
         )
         return None
 
+    # Warn if Claude CLI context compaction is not disabled globally.
+    # Compaction strips the <tools> block, causing tool-call hallucinations.
+    claude_json = Path.home() / ".claude.json"
+    try:
+        if claude_json.exists():
+            claude_cfg = json.loads(claude_json.read_text())
+            if claude_cfg.get("autoCompactEnabled") is not False:
+                logger.warning(
+                    "[PROVIDER] Claude CLI autoCompactEnabled is not disabled "
+                    "in %s. Context compaction can strip tool definitions and "
+                    "cause tool-call failures. Set '\"autoCompactEnabled\": false' "
+                    "in %s to prevent this.",
+                    claude_json,
+                    claude_json,
+                )
+        else:
+            logger.info(
+                "[PROVIDER] %s not found — cannot verify autoCompactEnabled setting.",
+                claude_json,
+            )
+    except Exception as exc:
+        logger.debug("[PROVIDER] Failed to read %s: %s", claude_json, exc)
+
     provider = ClaudeProvider(config=config, coordinator=coordinator)
     await coordinator.mount("providers", provider, name="claude")
     logger.info("Mounted ClaudeProvider")
@@ -272,6 +296,7 @@ class ClaudeProvider:
 
         self._repaired_tool_ids: set[str] = set()
         self._available_tool_names: set[str] = set()
+        self._last_tools_text: str = ""
         self._session: Session = Session()
         self._client: AsyncAnthropic | None = None
 
@@ -536,7 +561,99 @@ class ClaudeProvider:
                     },
                 )
 
+        response = await self._complete_chat_request(request, **kwargs)
+
+        # Handle provider-internal list_tools calls before the orchestrator sees them.
+        if response.tool_calls and any(
+            tc.name == "list_tools" for tc in response.tool_calls
+        ):
+            response = await self._fulfill_list_tools(request, response, **kwargs)
+
+        return response
+
+    async def _fulfill_list_tools(
+        self,
+        request: ChatRequest,
+        response: ChatResponse,
+        **kwargs: Any,
+    ) -> ChatResponse:
+        """Intercept list_tools calls: inject tool definitions and re-send."""
+        logger.info(
+            "[PROVIDER] Model called list_tools — re-injecting tool definitions"
+        )
+
+        # Build assistant message from the current response
+        assistant_content: list[Any] = []
+        tool_calls_dicts: list[dict[str, Any]] = []
+
+        if response.content:
+            for block in response.content:
+                # Pass through all content blocks (text, thinking, session, etc.)
+                assistant_content.append(block)
+
+        for tc in response.tool_calls or []:
+            if not any(
+                hasattr(b, "name")
+                and b.name == tc.name
+                and hasattr(b, "id")
+                and b.id == tc.id
+                for b in assistant_content
+            ):
+                assistant_content.append(
+                    ToolCallBlock(id=tc.id, name=tc.name, input=tc.arguments or {})
+                )
+            tool_calls_dicts.append(
+                {"id": tc.id, "tool": tc.name, "arguments": tc.arguments or {}}
+            )
+
+        request.messages.append(
+            Message(
+                role="assistant",
+                content=assistant_content,
+                tool_calls=tool_calls_dicts,
+            )
+        )
+
+        # Append tool results for every tool call in this turn
+        tools_text = self._last_tools_text or "No tool definitions available."
+        for tc in response.tool_calls or []:
+            if tc.name == "list_tools":
+                request.messages.append(
+                    Message(
+                        role="tool",
+                        content=tools_text,
+                        tool_call_id=tc.id,
+                        name="list_tools",
+                    )
+                )
+            else:
+                # Provide synthetic placeholder for concurrent tool calls
+                request.messages.append(
+                    Message(
+                        role="tool",
+                        content=(
+                            f"[Deferred: {tc.name} dispatch pending — "
+                            f"tool definitions were refreshed. Please re-call this tool.]"
+                        ),
+                        tool_call_id=tc.id,
+                        name=tc.name,
+                    )
+                )
+
         return await self._complete_chat_request(request, **kwargs)
+
+    def _format_tools_listing(self, tools: list[dict[str, Any]]) -> str:
+        """Format tool definitions for list_tools output."""
+        parts = []
+        for t in tools:
+            name = t.get("name", "?")
+            schema = json.dumps(t.get("input_schema", {}))
+            desc = t.get("description", "")
+            parts.append(
+                f'{{"name": "{name}", "input_schema": {schema}}}'
+                f"\n<instructions>\n{desc}\n</instructions>"
+            )
+        return "<tools>\n" + "\n\n".join(parts) + "\n</tools>"
 
     def _format_system_with_cache(
         self, system_msgs: list[Message]
@@ -618,6 +735,25 @@ class ClaudeProvider:
         )
         if request.tools:
             tools = self._convert_tools_from_request(request.tools)
+
+            # Store definitions for list_tools retrieval (before injecting list_tools itself)
+            self._last_tools_text = self._format_tools_listing(tools)
+
+            # Inject provider-internal list_tools so the model can recover
+            # tool definitions after CLI-side context compaction.
+            tools.append(
+                {
+                    "name": "list_tools",
+                    "description": (
+                        "Returns the full definitions of all available tools. "
+                        "Call this if tool definitions are no longer visible "
+                        "after context compaction."
+                    ),
+                    "input_schema": {"type": "object", "properties": {}},
+                }
+            )
+            self._available_tool_names.add("list_tools")
+
             params["tools"] = self._apply_tool_cache_control(tools)
             if tool_choice := kwargs.get("tool_choice"):
                 params["tool_choice"] = tool_choice
@@ -1395,7 +1531,11 @@ class ClaudeProvider:
 
         if system_reminders:
             prompt += "\n".join(system_reminders) + "\n\n"
-            prompt += f"""<system-reminder source="hooks-tools-reminder">\n{TOOL_USE_REMINDER}</system-reminder>"""
+
+        # Always include tool use reminder — do not gate on system_reminders.
+        # CLI-side compaction or missing hook injections can leave system_reminders
+        # empty, causing the model to fall back to <tool_call> XML hallucinations.
+        prompt += f"""<system-reminder source="hooks-tools-reminder">\n{TOOL_USE_REMINDER}</system-reminder>"""
 
         return prompt
 
@@ -1659,6 +1799,7 @@ Usage:
 - Generate a 7 character high-entropy id for each tool block
 - The "input" field must respect the "input_schema" in the tool definitions
 - Wait for the next turn for the tool results
+- If tool definitions are no longer visible after context compaction, call the "list_tools" tool to retrieve them.
 </instructions>
 """
 
