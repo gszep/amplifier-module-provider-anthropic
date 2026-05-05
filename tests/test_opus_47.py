@@ -849,3 +849,80 @@ class TestTaskBudgets:
             base_caps, runtime_info
         )
         assert overridden.supports_task_budget is True
+
+# ---------------------------------------------------------------------------
+# TestEnable1mContextRetirementWarning — warn at __init__ time when
+#   enable_1m_context=True but the model's 1M beta was retired on 2026-04-30
+# ---------------------------------------------------------------------------
+
+
+class TestEnable1mContextRetirementWarning:
+    """Warning emitted at __init__ when enable_1m_context=True on a retired-1m model."""
+
+    def _make(self, model: str, enable_1m_context: bool = True) -> AnthropicProvider:
+        return AnthropicProvider(
+            api_key="test-key",
+            config={
+                "use_streaming": False,
+                "max_retries": 0,
+                "default_model": model,
+                "enable_1m_context": enable_1m_context,
+            },
+        )
+
+    def test_sonnet_45_enable_1m_warns_at_init(self, caplog):
+        """Sonnet 4.5 + enable_1m_context=True → retirement warning at __init__."""
+        with caplog.at_level(logging.WARNING):
+            self._make("claude-sonnet-4-5-20250929", enable_1m_context=True)
+        assert any("1M context window" in r.message for r in caplog.records), (
+            "Expected 1M context retirement warning for Sonnet 4.5"
+        )
+        assert any("context-1m-2025-08-07" in r.message for r in caplog.records)
+
+    def test_opus_45_enable_1m_warns_at_init(self, caplog):
+        """Opus 4.5 + enable_1m_context=True → retirement warning at __init__."""
+        with caplog.at_level(logging.WARNING):
+            self._make("claude-opus-4-5-20251101", enable_1m_context=True)
+        assert any("1M context window" in r.message for r in caplog.records), (
+            "Expected 1M context retirement warning for Opus 4.5"
+        )
+
+    def test_sonnet_46_no_warning(self, caplog):
+        """Sonnet 4.6+ with enable_1m_context=True does NOT warn — still supports 1M."""
+        with caplog.at_level(logging.WARNING):
+            self._make("claude-sonnet-4-6-20260101", enable_1m_context=True)
+        assert not any("1M context window" in r.message for r in caplog.records)
+
+    def test_opus_46_no_warning(self, caplog):
+        """Opus 4.6+ with enable_1m_context=True does NOT warn — still supports 1M."""
+        with caplog.at_level(logging.WARNING):
+            self._make("claude-opus-4-6-20260101", enable_1m_context=True)
+        assert not any("1M context window" in r.message for r in caplog.records)
+
+    def test_enable_1m_false_no_warning_even_retired_model(self, caplog):
+        """enable_1m_context=False suppresses the warning even for a retired model."""
+        with caplog.at_level(logging.WARNING):
+            self._make("claude-sonnet-4-5-20250929", enable_1m_context=False)
+        assert not any("1M context window" in r.message for r in caplog.records)
+
+    def test_haiku_never_warned(self, caplog):
+        """Haiku models are unaffected — the warning only covers Sonnet/Opus."""
+        with caplog.at_level(logging.WARNING):
+            self._make("claude-haiku-4-5-20251001", enable_1m_context=True)
+        assert not any("1M context window" in r.message for r in caplog.records)
+
+    def test_unknown_sonnet_version_no_warning(self, caplog):
+        """Unknown sonnet version (0, 0) is treated conservatively — no false warning."""
+        with caplog.at_level(logging.WARNING):
+            self._make("claude-sonnet-futuristic", enable_1m_context=True)
+        assert not any("1M context window" in r.message for r in caplog.records)
+
+    def test_warning_message_includes_model_and_cap_window(self, caplog):
+        """Warning message names the model and reports its base context window."""
+        model = "claude-sonnet-4-5-20250929"
+        with caplog.at_level(logging.WARNING):
+            self._make(model, enable_1m_context=True)
+        msgs = [r.message for r in caplog.records if "1M context window" in r.message]
+        assert msgs, "No 1M context retirement warning found"
+        assert model in msgs[0], "Warning should name the model"
+        assert "200000" in msgs[0], "Warning should include the base context window size"

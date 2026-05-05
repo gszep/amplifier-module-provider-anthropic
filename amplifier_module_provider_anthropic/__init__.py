@@ -204,8 +204,8 @@ FALLBACK_STATE_VERSION = 1
 # ---------------------------------------------------------------------------
 # Deprecated model retirement dates — warn once per process per model
 # ---------------------------------------------------------------------------
+# Note: claude-3-haiku-20240307 (retired 2026-04-19) removed from this table — fully past retirement.
 _DEPRECATED_MODELS: dict[str, str] = {
-    # claude-3-haiku-20240307 retired 2026-04-19 — fully removed, no longer warned.
     "claude-sonnet-4-20250514": "2026-06-15",
     "claude-opus-4-20250514": "2026-06-15",
 }
@@ -482,6 +482,21 @@ class AnthropicProvider:
         self._enable_1m_context = self._config_bool(
             self.config.get("enable_1m_context", True)
         )
+        if self._enable_1m_context:
+            family = self._detect_family(self.default_model)
+            major, minor = self._detect_version(self.default_model, family)
+            version = (major, minor)
+            retired_sonnet = family == "sonnet" and version != (0, 0) and version < (4, 6)
+            retired_opus = family == "opus" and version != (0, 0) and version < (4, 6)
+            if retired_sonnet or retired_opus:
+                logger.warning(
+                    "[PROVIDER] enable_1m_context is set but %s no longer supports the "
+                    "1M context window — context-1m-2025-08-07 was retired by Anthropic "
+                    "on 2026-04-30 for models before Sonnet/Opus 4.6. Sessions are capped "
+                    "at %s tokens. Migrate to claude-sonnet-4-6 or claude-opus-4-6 for 1M context.",
+                    self.default_model,
+                    self._default_caps.base_context_window,
+                )
         self._fallback_sonnet_model = str(
             self.config.get("fallback_sonnet_model", "claude-sonnet-4-6")
         )
