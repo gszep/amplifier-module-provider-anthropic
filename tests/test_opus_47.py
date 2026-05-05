@@ -278,8 +278,13 @@ class TestBetaHeader1MFix:
     def test_sonnet_46_gets_1m_header(self):
         assert self._check("claude-sonnet-4-6-20260101") is True
 
-    def test_sonnet_45_gets_1m_header(self):
-        assert self._check("claude-sonnet-4-5-20250929") is True
+    def test_sonnet_45_no_1m_header(self):
+        # Retirement of context-1m-2025-08-07 for Sonnet 4.0/4.5 on 2026-04-30.
+        assert self._check("claude-sonnet-4-5-20250929") is False
+
+    def test_sonnet_40_no_1m_header(self):
+        # Retirement of context-1m-2025-08-07 for Sonnet 4.0/4.5 on 2026-04-30.
+        assert self._check("claude-sonnet-4-20250514") is False
 
     def test_sonnet_unknown_gets_1m_header(self):
         assert self._check("claude-sonnet-latest") is True
@@ -639,7 +644,9 @@ class TestDeprecationWarnings:
 
     def test_deprecated_model_emits_warning(self, caplog):
         """Deprecated model emits a logger.warning on first use."""
-        provider = _make_provider(default_model="claude-3-haiku-20240307")
+        # claude-3-haiku-20240307 is fully retired (removed from dict);
+        # use claude-sonnet-4-20250514 which still has an upcoming retirement date.
+        provider = _make_provider(default_model="claude-sonnet-4-20250514")
         provider.client.messages.with_raw_response.create = AsyncMock(
             return_value=_make_raw_mock()
         )
@@ -649,11 +656,11 @@ class TestDeprecationWarnings:
         with caplog.at_level(logging.WARNING):
             asyncio.run(provider.complete(request))
         assert any("deprecated" in r.message.lower() for r in caplog.records)
-        assert any("2026-04-19" in r.message for r in caplog.records)
+        assert any("2026-06-15" in r.message for r in caplog.records)
 
     def test_warning_only_emitted_once(self, caplog):
         """Second call with same deprecated model does NOT warn again."""
-        provider = _make_provider(default_model="claude-3-haiku-20240307")
+        provider = _make_provider(default_model="claude-sonnet-4-20250514")
         provider.client.messages.with_raw_response.create = AsyncMock(
             return_value=_make_raw_mock()
         )
@@ -694,14 +701,15 @@ class TestDeprecationWarnings:
     def test_deprecated_models_table_has_expected_entries(self):
         """Verify the deprecation table contains all known deprecated models."""
         deprecated = anthropic_module._DEPRECATED_MODELS
-        assert "claude-3-haiku-20240307" in deprecated
+        # claude-3-haiku-20240307 was fully retired 2026-04-19 and removed from the dict.
+        assert "claude-3-haiku-20240307" not in deprecated
         assert "claude-sonnet-4-20250514" in deprecated
         assert "claude-opus-4-20250514" in deprecated
-        assert len(deprecated) == 3
+        assert len(deprecated) == 2
 
     def test_clear_function_resets_warned_set(self):
         """_clear_deprecated_model_warnings() allows re-warning."""
-        provider = _make_provider(default_model="claude-3-haiku-20240307")
+        provider = _make_provider(default_model="claude-sonnet-4-20250514")
         provider.client.messages.with_raw_response.create = AsyncMock(
             return_value=_make_raw_mock()
         )

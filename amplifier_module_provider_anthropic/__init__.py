@@ -205,7 +205,7 @@ FALLBACK_STATE_VERSION = 1
 # Deprecated model retirement dates — warn once per process per model
 # ---------------------------------------------------------------------------
 _DEPRECATED_MODELS: dict[str, str] = {
-    "claude-3-haiku-20240307": "2026-04-19",
+    # claude-3-haiku-20240307 retired 2026-04-19 — fully removed, no longer warned.
     "claude-sonnet-4-20250514": "2026-06-15",
     "claude-opus-4-20250514": "2026-06-15",
 }
@@ -1068,12 +1068,16 @@ class AnthropicProvider:
         version = (major, minor)
 
         # Send the 1M beta header for known 1M-capable versions and unknown
-        # versions (forward-compat).  The header is harmless on models where
-        # 1M context is already GA (e.g. Opus 4.7+), but omitting it breaks
-        # models that still need it.
+        # versions (forward-compat).  The header is harmless on GA models
+        # (Sonnet 4.6+, Opus 4.6+). It was retired for Sonnet 4.0 and 4.5 on
+        # 2026-04-30; those models now hard-cap at 200k.
         if family == "opus":
             return version == (0, 0) or version >= (4, 6)
-        return family == "sonnet" and (version == (0, 0) or version >= (4, 0))
+        # context-1m-2025-08-07 was retired by Anthropic on 2026-04-30 for Sonnet 4.0 and 4.5.
+        # The header now has no effect on those models; any context exceeding 200k returns a 400.
+        # Only send for Sonnet 4.6+ (where 1M is GA and the header is still accepted) or unknown
+        # versions for forward-compat.
+        return family == "sonnet" and (version == (0, 0) or version >= (4, 6))
 
     def _should_add_interleaved_beta(
         self,
@@ -1087,6 +1091,9 @@ class AnthropicProvider:
             return False
         if request_caps.family == "haiku":
             return False
+        # Opus 4.6+ (and any model with supports_adaptive_thinking=True) using adaptive
+        # thinking already handles tool-use interleaving natively — the beta header must
+        # NOT be sent or the API returns a 400 conflict error.
         if (
             resolved_thinking_type == "adaptive"
             and request_caps.supports_adaptive_thinking
