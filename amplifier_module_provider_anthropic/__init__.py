@@ -2648,41 +2648,35 @@ class AnthropicProvider:
                         f"[PROVIDER] Rate limit: {tokens_remaining:,}/{tokens_limit:,} tokens remaining ({pct_used:.1f}% used)"
                     )
 
-            # Emit llm:response event
+            # Build ChatResponse first
+            chat_response = self._convert_to_chat_response(response)
+
+            # Emit from canonical fields
             if self.coordinator and hasattr(self.coordinator, "hooks"):
-                # INFO level: Summary with rate limit info
+                # Build usage dict per #69 schema — is-not-None guards for cache fields
+                _event_usage: dict[str, Any] = {
+                    "input_tokens":  chat_response.usage.input_tokens,
+                    "output_tokens": chat_response.usage.output_tokens,
+                }
+                if chat_response.usage.cache_read_tokens is not None:
+                    _event_usage["cache_read_tokens"] = chat_response.usage.cache_read_tokens
+                if chat_response.usage.cache_write_tokens is not None:
+                    _event_usage["cache_write_tokens"] = chat_response.usage.cache_write_tokens
                 response_event: dict[str, Any] = {
                     "provider": "anthropic",
                     "model": params["model"],
-                    "usage": {
-                        "input": response.usage.input_tokens,
-                        "output": response.usage.output_tokens,
-                        **(
-                            {"cache_read": response.usage.cache_read_input_tokens}
-                            if hasattr(response.usage, "cache_read_input_tokens")
-                            and response.usage.cache_read_input_tokens
-                            else {}
-                        ),
-                        **(
-                            {"cache_write": response.usage.cache_creation_input_tokens}
-                            if hasattr(response.usage, "cache_creation_input_tokens")
-                            and response.usage.cache_creation_input_tokens
-                            else {}
-                        ),
-                    },
-                    "status": "ok",
                     "duration_ms": elapsed_ms,
+                    "status": "ok",
+                    "usage": _event_usage,
                 }
                 # Add rate limit info if available
                 if rate_limit_info:
                     response_event["rate_limits"] = rate_limit_info
-
                 if self.raw:
                     response_event["raw"] = redact_secrets(response.model_dump())
                 await self.coordinator.hooks.emit("llm:response", response_event)
 
-            # Convert to ChatResponse
-            return self._convert_to_chat_response(response)
+            return chat_response  # Return the already-built response
 
         except KernelLLMError as e:
             # Phase 2: Kernel error types — emit llm:response error event, then propagate
@@ -3333,7 +3327,9 @@ class AnthropicProvider:
         # backward compatibility.  reasoning_tokens is intentionally None:
         # Anthropic does not provide a separate reasoning token count (thinking
         # tokens are included in output_tokens).
-        input_tokens = response.usage.input_tokens
+        input_tokens = response.usage.input_tokens + (
+            getattr(response.usage, "cache_read_input_tokens", None) or 0
+        )
         output_tokens = response.usage.output_tokens
 
         cache_creation = (
