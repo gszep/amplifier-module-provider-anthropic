@@ -6,9 +6,11 @@ import asyncio
 
 import json
 import logging
+import os
 from pathlib import Path
 import re
 import shutil
+import tempfile
 import time
 from dataclasses import dataclass, field
 from typing import Any, Literal
@@ -856,6 +858,50 @@ class ClaudeProvider:
 
         async def _do_complete() -> ParsedMessage:
             _client_ref: ClaudeSDKClient | None = None
+
+            # On a fresh CLI session, deliver the system prompt via a temp
+            # file passed to `--system-prompt-file` (through extra_args).
+            # This sidesteps two ceilings the in-prompt path would hit:
+            #   1. The OS argv `ARG_MAX` (~125 KB on Linux) that caps
+            #      inline `--system-prompt` strings.
+            #   2. The CLI's internal text-prompt length check that
+            #      previously surfaced as "Prompt is too long" when the
+            #      first-turn user prompt held system+tools as XML text.
+            # On resume turns the CLI already has the system loaded; keep
+            # the existing `system_prompt="---"` placeholder for parity
+            # with the prior behavior.
+            #
+            # Compatibility note: the CLI rejects the combination of a
+            # NON-EMPTY `--system-prompt` with `--system-prompt-file`. The
+            # SDK always emits a `--system-prompt` arg, so we pass
+            # `system_prompt=None` (which renders as `--system-prompt ""`)
+            # — empty is accepted alongside `--system-prompt-file`.
+            sys_file_path: str | None = None
+            if not self._session.id and system_blocks:
+                fd, sys_file_path = tempfile.mkstemp(
+                    prefix="amplifier_sys_", suffix=".md"
+                )
+                try:
+                    with os.fdopen(fd, "w", encoding="utf-8") as f:
+                        f.write(system_blocks[0]["text"])
+                except Exception:
+                    # If write fails, clean up immediately and surface
+                    try:
+                        os.unlink(sys_file_path)
+                    except OSError:
+                        pass
+                    raise
+                sdk_sys_kwargs: dict[str, Any] = {
+                    "system_prompt": None,
+                    "extra_args": {"system-prompt-file": sys_file_path},
+                }
+                logger.info(
+                    "[PROVIDER] System prompt delivered via file (%d chars)",
+                    len(system_blocks[0]["text"]),
+                )
+            else:
+                sdk_sys_kwargs = {"system_prompt": "---"}
+
             try:
                 async with asyncio.timeout(self.timeout):
                     async with ClaudeSDKClient(
@@ -863,9 +909,9 @@ class ClaudeProvider:
                             tools=[],  # disable built-in tools
                             model=self.default_model,
                             resume=self._session.id,
-                            system_prompt="---",  # system prompt is passed in messages
                             max_thinking_tokens=self.max_thinking_tokens,
                             betas=self._beta_headers,
+                            **sdk_sys_kwargs,
                         )
                     ) as client:
                         _client_ref = client
@@ -914,6 +960,16 @@ class ClaudeProvider:
                     model=model,
                     retryable=True,
                 ) from e
+
+            finally:
+                # Best-effort cleanup of the system-prompt temp file. The
+                # CLI reads the file synchronously at startup, so by the
+                # time control returns here the file is no longer needed.
+                if sys_file_path:
+                    try:
+                        os.unlink(sys_file_path)
+                    except OSError:
+                        pass
 
         async def _on_retry(attempt: int, delay: float, error: KernelLLMError) -> None:
             logger.warning(
@@ -1463,14 +1519,15 @@ class ClaudeProvider:
     def _convert_prompt_from_request_params(
         self, params: dict[str, list[dict[str, str | list[dict[str, Any]]]]]
     ) -> str:
-        system: list[str] = []
+        # NOTE: System content is NOT inflated into the user prompt text.
+        # On fresh CLI sessions it is delivered via `--system-prompt-file`
+        # at the ClaudeAgentOptions construction site (see _do_complete).
+        # On resume turns the CLI already has the system loaded. Either
+        # way, this function intentionally ignores `params["system"]`.
         tools: list[str] = []
         system_reminders: list[str] = []
         user_messages: list[str] = []
         tool_results: list[str] = []
-
-        for message in params.get("system", []):
-            system.append(message["text"])
 
         for message in params.get("tools", []):
             tools.append(
@@ -1542,7 +1599,9 @@ class ClaudeProvider:
         prompt = ""
 
         if not self._session.id:
-            prompt += "<system>\n" + "\n\n".join(system) + "\n</system>\n\n"
+            # System content is delivered out-of-band via
+            # `--system-prompt-file` (see _do_complete). Only tool
+            # definitions are inflated into the first-turn prompt text.
             prompt += "<tools>\n" + "\n\n".join(tools) + "\n</tools>\n\n"
 
         if tool_results:
