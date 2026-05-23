@@ -372,10 +372,21 @@ class ClaudeProvider:
 
     @staticmethod
     def _detect_version(model_id: str, family: str) -> tuple[int, int]:
-        pattern = rf"{family}-(\d+)-(\d+)"
+        # Match e.g. "claude-opus-4-6" (major-minor) but NOT
+        # "claude-opus-4-20250514" where the second segment is a snapshot date.
+        # The {1,2} bound on minor prevents accidental matches against date
+        # suffixes which would incorrectly classify a model as a high version
+        # (e.g. (4, 20250514) >= (4, 7) is True).
+        pattern = rf"{family}-(\d+)-(\d{{1,2}})(?:-|$)"
         match = re.search(pattern, model_id.lower())
         if match:
             return int(match.group(1)), int(match.group(2))
+        # Fall back to major-only when no minor is detectable; treat minor
+        # as unknown (0) so capability tiers default to the conservative path.
+        major_only_pattern = rf"{family}-(\d+)(?:-|$)"
+        match = re.search(major_only_pattern, model_id.lower())
+        if match:
+            return int(match.group(1)), 0
         return (0, 0)
 
     @classmethod
@@ -723,8 +734,14 @@ class ClaudeProvider:
             "messages": all_messages,
             "max_tokens": request.max_output_tokens
             or kwargs.get("max_tokens", self.max_tokens),
-            "temperature": request.temperature
-            or kwargs.get("temperature", self.temperature),
+            # NOTE: `request.temperature or ...` would silently fall through
+            # to the default when an explicit temperature=0.0 is requested
+            # (0.0 is falsy). Use explicit None check instead.
+            "temperature": (
+                request.temperature
+                if request.temperature is not None
+                else kwargs.get("temperature", self.temperature)
+            ),
         }
 
         if system_blocks:
@@ -1411,10 +1428,15 @@ class ClaudeProvider:
         cache_creation = getattr(response.usage, "cache_creation_input_tokens", None)
         cache_read = getattr(response.usage, "cache_read_input_tokens", None)
 
+        # Gross input_tokens must include cache-read tokens. The Anthropic API
+        # reports `input_tokens` exclusive of cache reads, but cache reads are
+        # billable and should appear in the total. Cache-creation tokens are
+        # already counted in `input_tokens` by the API.
+        gross_input_tokens = response.usage.input_tokens + (cache_read or 0)
         usage_kwargs: dict[str, Any] = {
-            "input_tokens": response.usage.input_tokens,
+            "input_tokens": gross_input_tokens,
             "output_tokens": response.usage.output_tokens,
-            "total_tokens": response.usage.input_tokens + response.usage.output_tokens,
+            "total_tokens": gross_input_tokens + response.usage.output_tokens,
             "cache_read_tokens": cache_read,
             "cache_write_tokens": cache_creation,
         }
@@ -1677,9 +1699,19 @@ class ClaudeProvider:
                                         signature=block.signature,
                                     )
                                 )
+                            case claude_agent_sdk.types.ToolUseBlock():
+                                content.append(
+                                    AnthropicToolUseBlock(
+                                        type="tool_use",
+                                        id=block.id,
+                                        name=block.name,
+                                        input=block.input,
+                                    )
+                                )
                             case _:
-                                raise NotImplementedError(
-                                    f"[PROVIDER] AssistantMessage content block type from SDK: {type(block)}"
+                                logger.debug(
+                                    "[PROVIDER] AssistantMessage content block type ignored: %s",
+                                    type(block),
                                 )
 
                 case claude_agent_sdk.types.ResultMessage():
