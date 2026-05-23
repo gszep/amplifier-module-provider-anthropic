@@ -300,6 +300,7 @@ class ClaudeProvider:
         self._available_tool_names: set[str] = set()
         self._last_tools_text: str = ""
         self._session: Session = Session()
+        self._messages_sent: int = 0
         self._client: AsyncAnthropic | None = None
 
         self._retry_config = RetryConfig(
@@ -915,9 +916,18 @@ class ClaudeProvider:
                         )
                     ) as client:
                         _client_ref = client
-                        prompt = self._convert_prompt_from_request_params(params)
+                        prompt = self._convert_prompt_from_request_params(
+                            params,
+                            start_index=(
+                                self._messages_sent if self._session.id else 0
+                            ),
+                        )
                         await client.query(prompt, session_id=self._session.id)
                         result = await self._parse_response(client, model)
+
+                        # Track how many messages the CLI has seen so
+                        # subsequent turns only send the delta.
+                        self._messages_sent = len(params.get("messages", []))
 
                         try:
                             transport = client._transport
@@ -1517,7 +1527,9 @@ class ClaudeProvider:
         )
 
     def _convert_prompt_from_request_params(
-        self, params: dict[str, list[dict[str, str | list[dict[str, Any]]]]]
+        self,
+        params: dict[str, list[dict[str, str | list[dict[str, Any]]]]],
+        start_index: int = 0,
     ) -> str:
         # NOTE: System content is NOT inflated into the user prompt text.
         # On fresh CLI sessions it is delivered via `--system-prompt-file`
@@ -1534,7 +1546,20 @@ class ClaudeProvider:
                 f"""{{"name": "{message["name"]}", "input_schema": {json.dumps(message["input_schema"])}}}\n<instructions>\n{message["description"]}\n</instructions>"""
             )
 
-        for message in params.get("messages", []):
+        # On resume turns the CLI already holds the conversation history.
+        # Only process messages the CLI hasn't seen yet (after start_index)
+        # to avoid re-inflating the entire history into the text prompt,
+        # which would otherwise hit "Prompt is too long" on heavy sessions.
+        #
+        # Safety: if the orchestrator compacted the conversation (removed
+        # old messages), start_index may exceed the current length. Fall
+        # back to processing everything so the CLI gets valid content.
+        all_messages = params.get("messages", [])
+        if start_index > len(all_messages):
+            start_index = 0
+        messages_to_process = all_messages[start_index:]
+
+        for message in messages_to_process:
             match message["role"]:
                 case "user":
                     match message["content"]:
@@ -1857,6 +1882,7 @@ class ClaudeProvider:
                         return
 
         self._session = Session()
+        self._messages_sent = 0
 
 
 TOOL_USE_EXAMPLE1 = json.dumps(
