@@ -93,6 +93,14 @@ class _RateLimitState:
     output_tokens_limit: int | None = None
     output_tokens_reset: str | None = None
 
+    # Fast-mode token dimensions (present only when fast-mode is active)
+    fast_input_tokens_remaining: int | None = None
+    fast_input_tokens_limit: int | None = None
+    fast_input_tokens_reset: str | None = None
+    fast_output_tokens_remaining: int | None = None
+    fast_output_tokens_limit: int | None = None
+    fast_output_tokens_reset: str | None = None
+
     def update_from_headers(self, rate_limit_info: dict[str, Any] | None) -> None:
         """Update state from parsed rate limit headers dict."""
         if not rate_limit_info:
@@ -107,6 +115,12 @@ class _RateLimitState:
             "output_tokens_remaining",
             "output_tokens_limit",
             "output_tokens_reset",
+            "fast_input_tokens_remaining",
+            "fast_input_tokens_limit",
+            "fast_input_tokens_reset",
+            "fast_output_tokens_remaining",
+            "fast_output_tokens_limit",
+            "fast_output_tokens_reset",
         ):
             val = rate_limit_info.get(attr)
             if val is not None:
@@ -140,6 +154,18 @@ class _RateLimitState:
                 "output_tokens_remaining",
                 "output_tokens_limit",
                 "output_tokens_reset",
+            ),
+            (
+                "fast_input_tokens",
+                "fast_input_tokens_remaining",
+                "fast_input_tokens_limit",
+                "fast_input_tokens_reset",
+            ),
+            (
+                "fast_output_tokens",
+                "fast_output_tokens_remaining",
+                "fast_output_tokens_limit",
+                "fast_output_tokens_reset",
             ),
         ):
             remaining = getattr(self, remaining_attr)
@@ -200,6 +226,7 @@ async def _get_process_semaphore(max_concurrent: int) -> asyncio.Semaphore | Non
 BETA_HEADER_1M_CONTEXT = "context-1m-2025-08-07"
 BETA_HEADER_INTERLEAVED_THINKING = "interleaved-thinking-2025-05-14"
 BETA_HEADER_TASK_BUDGETS = "task-budgets-2026-03-13"
+BETA_HEADER_FAST_MODE = "fast-mode-2026-02-01"
 PROVIDER_FALLBACK_OPEN = "provider:fallback_open"
 PROVIDER_FALLBACK_ACTIVE = "provider:fallback_active"
 FALLBACK_STATE_VERSION = 1
@@ -255,6 +282,10 @@ class ModelCapabilities:
         False  # True = model accepts output_config.task_budget (beta)
     )
     default_thinking_budget: int = 0
+    supports_speed: bool = False  # True = model accepts the speed parameter
+    supports_inline_system: bool = (
+        False  # True = model accepts role='system' in messages[]
+    )
     capability_tags: tuple[str, ...] = ("tools", "streaming", "json_mode")
 
 
@@ -360,7 +391,15 @@ async def mount(coordinator: ModuleCoordinator, config: dict[str, Any] | None = 
     coordinator.register_contributor(
         "session.cost",
         "provider-anthropic",
-        lambda: {"cost_usd": str(_totals["cost_usd"]) if _totals["cost_usd"] is not None else None} if _totals["has_data"] else None,
+        lambda: (
+            {
+                "cost_usd": str(_totals["cost_usd"])
+                if _totals["cost_usd"] is not None
+                else None
+            }
+            if _totals["has_data"]
+            else None
+        ),
     )
     logger.info("Mounted AnthropicProvider")
 
@@ -877,6 +916,7 @@ class AnthropicProvider:
         if family == "opus":
             is_46_plus = not version_known or (major, minor) >= (4, 6)
             is_47_plus = not version_known or (major, minor) >= (4, 7)
+            is_48_plus = not version_known or (major, minor) >= (4, 8)
             return ModelCapabilities(
                 family="opus",
                 max_output_tokens=128000 if is_46_plus else 64000,
@@ -889,10 +929,14 @@ class AnthropicProvider:
                 supports_sampling=not is_47_plus,
                 thinking_display_required=is_47_plus,
                 supported_efforts=(
-                    ("low", "medium", "high", "xhigh")
+                    ("low", "medium", "high", "xhigh", "max")
+                    if is_48_plus
+                    else ("low", "medium", "high", "xhigh")
                     if is_47_plus
                     else ("low", "medium", "high")
                 ),
+                supports_speed=is_48_plus,
+                supports_inline_system=is_48_plus,
                 default_thinking_budget=64000 if is_46_plus else 32000,
                 capability_tags=(
                     "tools",
@@ -1035,6 +1079,8 @@ class AnthropicProvider:
             supports_sampling=base_caps.supports_sampling,
             thinking_display_required=base_caps.thinking_display_required,
             supported_efforts=base_caps.supported_efforts,
+            supports_speed=base_caps.supports_speed,
+            supports_inline_system=base_caps.supports_inline_system,
             default_thinking_budget=default_thinking_budget,
             capability_tags=tuple(capability_tags),
         )
@@ -1084,12 +1130,12 @@ class AnthropicProvider:
         major, minor = self._detect_version(model_id, family)
         version = (major, minor)
 
-        # Send the 1M beta header for known 1M-capable versions and unknown
-        # versions (forward-compat).  The header is harmless on models where
-        # 1M context is already GA (e.g. Opus 4.7+), but omitting it breaks
-        # models that still need it.
         if family == "opus":
-            return version == (0, 0) or version >= (4, 6)
+            # 1M context is GA for Opus 4.8+; beta header only needed for 4.6 and 4.7.
+            # Unknown versions (0, 0) assume latest (4.8+), so no header.
+            if version == (0, 0):
+                return False
+            return (4, 6) <= version < (4, 8)
         return family == "sonnet" and (version == (0, 0) or version >= (4, 0))
 
     def _should_add_interleaved_beta(
@@ -1119,6 +1165,7 @@ class AnthropicProvider:
         tools_present: bool,
         resolved_thinking_type: str | None,
         has_task_budget: bool = False,
+        fast_mode: bool = False,
     ) -> list[str]:
         """Build the anthropic-beta header set for a specific effective model."""
         headers = list(self._beta_headers)
@@ -1132,6 +1179,8 @@ class AnthropicProvider:
             headers.append(BETA_HEADER_INTERLEAVED_THINKING)
         if has_task_budget:
             headers.append(BETA_HEADER_TASK_BUDGETS)
+        if fast_mode:
+            headers.append(BETA_HEADER_FAST_MODE)
         return self._dedupe_headers(headers)
 
     @staticmethod
@@ -1828,6 +1877,28 @@ class AnthropicProvider:
         if output_tokens_reset is not None:
             info["output_tokens_reset"] = output_tokens_reset
 
+        # Fast-mode input token limits (present only when fast-mode is active)
+        fast_input_tokens_remaining = get_int("anthropic-fast-input-tokens-remaining")
+        fast_input_tokens_limit = get_int("anthropic-fast-input-tokens-limit")
+        fast_input_tokens_reset = get_str("anthropic-fast-input-tokens-reset")
+        if fast_input_tokens_remaining is not None:
+            info["fast_input_tokens_remaining"] = fast_input_tokens_remaining
+        if fast_input_tokens_limit is not None:
+            info["fast_input_tokens_limit"] = fast_input_tokens_limit
+        if fast_input_tokens_reset is not None:
+            info["fast_input_tokens_reset"] = fast_input_tokens_reset
+
+        # Fast-mode output token limits (present only when fast-mode is active)
+        fast_output_tokens_remaining = get_int("anthropic-fast-output-tokens-remaining")
+        fast_output_tokens_limit = get_int("anthropic-fast-output-tokens-limit")
+        fast_output_tokens_reset = get_str("anthropic-fast-output-tokens-reset")
+        if fast_output_tokens_remaining is not None:
+            info["fast_output_tokens_remaining"] = fast_output_tokens_remaining
+        if fast_output_tokens_limit is not None:
+            info["fast_output_tokens_limit"] = fast_output_tokens_limit
+        if fast_output_tokens_reset is not None:
+            info["fast_output_tokens_reset"] = fast_output_tokens_reset
+
         # Retry-after (typically only on 429)
         if retry_after := headers.get("retry-after"):
             try:
@@ -2252,6 +2323,25 @@ class AnthropicProvider:
                     params["model"],
                 )
 
+        # Speed parameter (Opus 4.8+): inject into API params when model supports it.
+        # Mirrors the supports_sampling pattern — if unsupported, log warning and omit.
+        fast_mode_enabled = False
+        speed = self.config.get("speed")
+        if speed is not None:
+            if request_caps.supports_speed:
+                params["speed"] = speed
+                fast_mode_enabled = speed == "fast"
+                logger.info(
+                    "[PROVIDER] speed=%s for %s",
+                    speed,
+                    params["model"],
+                )
+            else:
+                logger.warning(
+                    "[PROVIDER] Model %s does not support the speed parameter — omitting",
+                    params["model"],
+                )
+
         # Add stop_sequences if specified
         if stop_sequences := kwargs.get("stop_sequences"):
             params["stop_sequences"] = stop_sequences
@@ -2262,6 +2352,7 @@ class AnthropicProvider:
             tools_present=bool(params.get("tools")),
             resolved_thinking_type=resolved_thinking_type,
             has_task_budget=has_task_budget,
+            fast_mode=fast_mode_enabled,
         )
         if request_beta_headers:
             extra_headers = dict(params.get("extra_headers", {}))
@@ -3390,6 +3481,7 @@ class AnthropicProvider:
                 response.usage, "cache_creation_input_tokens", 0
             )
             or 0,
+            speed=getattr(response.usage, "speed", None),
         )
         usage = usage.model_copy(update={"cost_usd": cost})
         self._add_cost(cost)

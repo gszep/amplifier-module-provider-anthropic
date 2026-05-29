@@ -117,6 +117,44 @@ class TestGetCapabilitiesOpus:
         assert caps.default_thinking_budget + buffer <= caps.max_output_tokens
 
 
+class TestGetCapabilitiesOpus48:
+    """Tests for Opus 4.8 capabilities — is_48_plus gate, speed/inline_system flags, max effort."""
+
+    def test_opus_48_supports_speed(self):
+        """Opus 4.8 accepts the speed parameter."""
+        caps = AnthropicProvider._get_capabilities("claude-opus-4-8")
+        assert caps.supports_speed is True
+
+    def test_opus_48_supports_inline_system(self):
+        """Opus 4.8 accepts role='system' in messages[]."""
+        caps = AnthropicProvider._get_capabilities("claude-opus-4-8")
+        assert caps.supports_inline_system is True
+
+    def test_opus_48_has_max_effort(self):
+        """Opus 4.8 has 'max' effort tier and the full effort tuple."""
+        caps = AnthropicProvider._get_capabilities("claude-opus-4-8")
+        assert "max" in caps.supported_efforts
+        assert caps.supported_efforts == ("low", "medium", "high", "xhigh", "max")
+
+    def test_opus_47_does_not_support_speed(self):
+        """Opus 4.7 does NOT accept the speed parameter."""
+        caps = AnthropicProvider._get_capabilities("claude-opus-4-7-20260416")
+        assert caps.supports_speed is False
+        assert caps.supports_inline_system is False
+
+    def test_opus_47_no_max_effort(self):
+        """Opus 4.7 does not have the 'max' effort tier."""
+        caps = AnthropicProvider._get_capabilities("claude-opus-4-7-20260416")
+        assert "max" not in caps.supported_efforts
+        assert caps.supported_efforts == ("low", "medium", "high", "xhigh")
+
+    def test_opus_unknown_version_assumes_48(self):
+        """Unknown opus version (e.g. claude-opus-latest) assumes 4.8 for forward compatibility."""
+        caps = AnthropicProvider._get_capabilities("claude-opus-latest")
+        assert caps.supports_speed is True
+        assert "max" in caps.supported_efforts
+
+
 class TestGetCapabilitiesSonnet:
     """Tests for Sonnet model capabilities (should be unaffected by fix)."""
 
@@ -203,3 +241,109 @@ class TestGetCapabilitiesHaiku:
         caps = AnthropicProvider._get_capabilities("claude-haiku-latest")
         assert caps.supports_thinking is True
         assert caps.default_thinking_budget == 32000
+
+
+class TestFastModeBetaHeader:
+    """Tests for BETA_HEADER_FAST_MODE constant and fast_mode kwarg in _build_request_beta_headers."""
+
+    def test_fast_mode_beta_header_constant(self):
+        """BETA_HEADER_FAST_MODE must equal the expected beta header string."""
+        from amplifier_module_provider_anthropic import BETA_HEADER_FAST_MODE
+
+        assert BETA_HEADER_FAST_MODE == "fast-mode-2026-02-01"
+
+    def test_beta_header_added_when_fast_mode(self):
+        """fast_mode=True must include BETA_HEADER_FAST_MODE in returned headers."""
+        from amplifier_module_provider_anthropic import BETA_HEADER_FAST_MODE
+
+        provider = AnthropicProvider(api_key="test-key", config={"max_retries": 0})
+        caps = AnthropicProvider._get_capabilities("claude-opus-4-8")
+        headers = provider._build_request_beta_headers(
+            model_id="claude-opus-4-8",
+            request_caps=caps,
+            tools_present=False,
+            resolved_thinking_type=None,
+            fast_mode=True,
+        )
+        assert BETA_HEADER_FAST_MODE in headers
+
+    def test_beta_header_absent_when_not_fast_mode(self):
+        """fast_mode=False must NOT include BETA_HEADER_FAST_MODE in returned headers."""
+        from amplifier_module_provider_anthropic import BETA_HEADER_FAST_MODE
+
+        provider = AnthropicProvider(api_key="test-key", config={"max_retries": 0})
+        caps = AnthropicProvider._get_capabilities("claude-opus-4-8")
+        headers = provider._build_request_beta_headers(
+            model_id="claude-opus-4-8",
+            request_caps=caps,
+            tools_present=False,
+            resolved_thinking_type=None,
+            fast_mode=False,
+        )
+        assert BETA_HEADER_FAST_MODE not in headers
+
+
+class TestContextBetaHeaderOpus48:
+    """Opus 4.8+ should NOT get the 1M context beta header (1M is GA)."""
+
+    def test_opus_48_no_1m_beta_header(self):
+        from amplifier_module_provider_anthropic import BETA_HEADER_1M_CONTEXT
+
+        provider = AnthropicProvider(api_key="test-key", config={"max_retries": 0})
+        caps = AnthropicProvider._get_capabilities("claude-opus-4-8")
+        headers = provider._build_request_beta_headers(
+            model_id="claude-opus-4-8",
+            request_caps=caps,
+            tools_present=False,
+            resolved_thinking_type=None,
+        )
+        assert BETA_HEADER_1M_CONTEXT not in headers
+
+    def test_opus_47_still_gets_1m_beta_header(self):
+        from amplifier_module_provider_anthropic import BETA_HEADER_1M_CONTEXT
+
+        provider = AnthropicProvider(api_key="test-key", config={"max_retries": 0})
+        caps = AnthropicProvider._get_capabilities("claude-opus-4-7-20260416")
+        headers = provider._build_request_beta_headers(
+            model_id="claude-opus-4-7-20260416",
+            request_caps=caps,
+            tools_present=False,
+            resolved_thinking_type=None,
+        )
+        assert BETA_HEADER_1M_CONTEXT in headers
+
+    def test_opus_unknown_version_no_1m_beta_header(self):
+        """Unknown opus version assumes latest (4.8+), so no 1M header needed."""
+        from amplifier_module_provider_anthropic import BETA_HEADER_1M_CONTEXT
+
+        provider = AnthropicProvider(api_key="test-key", config={"max_retries": 0})
+        caps = AnthropicProvider._get_capabilities("claude-opus-latest")
+        headers = provider._build_request_beta_headers(
+            model_id="claude-opus-latest",
+            request_caps=caps,
+            tools_present=False,
+            resolved_thinking_type=None,
+        )
+        assert BETA_HEADER_1M_CONTEXT not in headers
+
+
+class TestSpeedConfigPlumbing:
+    """Tests for speed config key validation and beta header plumbing."""
+
+    def test_supported_model_unsupported_speed_logs_and_omits(self):
+        """Opus 4.7 does not support speed — provider omits the param and skips the beta header."""
+        from amplifier_module_provider_anthropic import BETA_HEADER_FAST_MODE
+
+        provider = AnthropicProvider(
+            api_key="test-key", config={"max_retries": 0, "speed": "fast"}
+        )
+        caps = AnthropicProvider._get_capabilities("claude-opus-4-7-20260416")
+        assert caps.supports_speed is False
+        headers = provider._build_request_beta_headers(
+            model_id="claude-opus-4-7-20260416",
+            request_caps=caps,
+            tools_present=False,
+            resolved_thinking_type=None,
+            fast_mode=False,
+        )
+        assert BETA_HEADER_FAST_MODE not in headers
