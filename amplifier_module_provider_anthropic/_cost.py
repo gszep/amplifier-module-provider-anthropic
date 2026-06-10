@@ -1,6 +1,6 @@
 """Anthropic pricing rates and cost computation.
 
-Verification date: 2026-05-06
+Verification date: 2026-06-10
 Source: https://www.anthropic.com/pricing
 
 Usage
