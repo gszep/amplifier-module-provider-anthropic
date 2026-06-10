@@ -4,7 +4,43 @@ Validates that _get_capabilities returns correct max_output_tokens,
 thinking budgets, and feature flags for each model family and version.
 """
 
+import asyncio
+from typing import Any, cast
+from unittest.mock import AsyncMock, MagicMock
+
+from amplifier_core import ModuleCoordinator
+from amplifier_core.message_models import ChatRequest, Message
+
 from amplifier_module_provider_anthropic import AnthropicProvider, ModelCapabilities
+
+from tests._helpers import DummyResponse, FakeCoordinator
+
+
+def _make_provider(default_model: str = "claude-fable-5") -> AnthropicProvider:
+    provider = AnthropicProvider(
+        api_key="test-key",
+        config={
+            "use_streaming": False,
+            "max_retries": 0,
+            "default_model": default_model,
+        },
+    )
+    provider.coordinator = cast(ModuleCoordinator, FakeCoordinator())
+    return provider
+
+
+def _make_raw_mock() -> MagicMock:
+    raw = MagicMock()
+    raw.parse.return_value = DummyResponse()
+    raw.headers = {}
+    return raw
+
+
+def _get_api_params(mock_create: AsyncMock) -> dict[str, Any]:
+    """Extract the kwargs passed to the API call."""
+    assert mock_create.await_count == 1
+    _, kwargs = mock_create.call_args
+    return kwargs
 
 
 class TestDetectFamily:
@@ -442,3 +478,27 @@ class TestGetCapabilitiesFable5:
         """Unknown version assumes latest (thinking_always_on=True)."""
         caps = AnthropicProvider._get_capabilities("claude-fable-latest")
         assert caps.thinking_always_on is True
+
+
+class TestThinkingAlwaysOnRequestBehavior:
+    """thinking_always_on=True: the provider never injects a thinking param."""
+
+    def test_fable5_no_thinking_param_with_reasoning_effort(self):
+        """claude-fable-5 + reasoning_effort='high' must NOT send thinking param.
+
+        Fable 5 has thinking always on — the API controls it implicitly.
+        Sending {type:disabled} (or any explicit thinking param) causes HTTP 400.
+        """
+        provider = _make_provider(default_model="claude-fable-5")
+        provider.client.messages.with_raw_response.create = AsyncMock(
+            return_value=_make_raw_mock()
+        )
+
+        request = ChatRequest(
+            messages=[Message(role="user", content="Hello")],
+            reasoning_effort="high",
+        )
+        asyncio.run(provider.complete(request))
+
+        params = _get_api_params(provider.client.messages.with_raw_response.create)
+        assert "thinking" not in params

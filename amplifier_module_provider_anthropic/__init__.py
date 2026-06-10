@@ -2174,131 +2174,142 @@ class AnthropicProvider:
                 thinking_enabled = False
 
         if thinking_enabled:
-            # Phase 2: reasoning_effort maps to thinking_type + budget_tokens.
-            # This sits between kwargs (highest) and config (lowest) in precedence.
-            #
-            # | reasoning_effort | thinking_type | budget_tokens             |
-            # |-----------------|---------------|---------------------------|
-            # | "low"           | "enabled"     | 4096 (minimal thinking)   |
-            # | "medium"        | "adaptive"*   | model default             |
-            # | "high"          | "adaptive"*   | generous (model default)  |
-            # | None            | (existing)    | (existing)                |
-            # * falls back to "enabled" if model doesn't support adaptive
-            # * On Opus 4.7+ "enabled" is intercepted → forced to "adaptive"
-            #   (models without supports_manual_thinking reject type="enabled")
-
-            effort_thinking_type: str | None = None
-            effort_budget: int | None = None
-            if reasoning_effort == "low":
-                effort_thinking_type = "enabled"
-                effort_budget = 4096
-            elif reasoning_effort == "medium":
-                effort_thinking_type = "adaptive"
-                effort_budget = request_caps.default_thinking_budget
-            elif reasoning_effort == "high":
-                effort_thinking_type = "adaptive"
-                effort_budget = request_caps.default_thinking_budget
-            elif reasoning_effort == "xhigh":
-                effort_thinking_type = "adaptive"
-                effort_budget = request_caps.default_thinking_budget
-
-            # Resolve budget: kwargs > reasoning_effort > config > model default
-            budget_tokens = (
-                kwargs.get("thinking_budget_tokens")
-                or effort_budget
-                or self.config.get("thinking_budget_tokens")
-                or request_caps.default_thinking_budget
-            )
-            budget_tokens = max(1024, int(budget_tokens))
-            max_budget_tokens = (
-                model_ceiling if params.get("tools") else max(1024, model_ceiling - 1)
-            )
-            budget_tokens = min(budget_tokens, max_budget_tokens)
-            # Default buffer raised from 4096 → 8192 to accommodate Opus 4.7's
-            # denser tokenizer (1.0–1.35× more tokens for equivalent text).
-            buffer_tokens = kwargs.get("thinking_budget_buffer") or self.config.get(
-                "thinking_budget_buffer", 8192
-            )
-
-            thinking_budget = budget_tokens
-
-            # Resolve thinking_type: kwargs > reasoning_effort > config > "adaptive"
-            thinking_type = (
-                kwargs.get("thinking_type")
-                or effort_thinking_type
-                or self.config.get("thinking_type", "adaptive")
-            )
-
-            # Adaptive thinking: model controls its own budget.  The API schema
-            # is a discriminated union — "adaptive" accepts NO extra fields
-            # (budget_tokens is forbidden).  Fall back to "enabled" with an
-            # explicit budget when the model doesn't support adaptive.
-            if thinking_type == "adaptive" and request_caps.supports_adaptive_thinking:
-                params["thinking"] = {"type": "adaptive"}
+            # Fable 5 / Mythos 5: thinking is always on. Never inject a thinking
+            # param — the API handles it implicitly. Sending {type:disabled} causes
+            # an HTTP 400. Set resolved_thinking_type for downstream use (beta headers).
+            if request_caps.thinking_always_on:
                 resolved_thinking_type = "adaptive"
-            elif not request_caps.supports_manual_thinking:
-                # Model rejects type="enabled" (e.g. Opus 4.7+) — force adaptive.
-                # This is safe because models that don't support manual thinking
-                # always support adaptive thinking.
-                if thinking_type != "adaptive":
-                    logger.info(
-                        "[PROVIDER] Model %s does not support manual thinking "
-                        "(type='enabled') — using adaptive instead of '%s'",
-                        params["model"],
-                        thinking_type,
+            else:
+                # Phase 2: reasoning_effort maps to thinking_type + budget_tokens.
+                # This sits between kwargs (highest) and config (lowest) in precedence.
+                #
+                # | reasoning_effort | thinking_type | budget_tokens             |
+                # |-----------------|---------------|---------------------------|
+                # | "low"           | "enabled"     | 4096 (minimal thinking)   |
+                # | "medium"        | "adaptive"*   | model default             |
+                # | "high"          | "adaptive"*   | generous (model default)  |
+                # | None            | (existing)    | (existing)                |
+                # * falls back to "enabled" if model doesn't support adaptive
+                # * On Opus 4.7+ "enabled" is intercepted → forced to "adaptive"
+                #   (models without supports_manual_thinking reject type="enabled")
+
+                effort_thinking_type: str | None = None
+                effort_budget: int | None = None
+                if reasoning_effort == "low":
+                    effort_thinking_type = "enabled"
+                    effort_budget = 4096
+                elif reasoning_effort == "medium":
+                    effort_thinking_type = "adaptive"
+                    effort_budget = request_caps.default_thinking_budget
+                elif reasoning_effort == "high":
+                    effort_thinking_type = "adaptive"
+                    effort_budget = request_caps.default_thinking_budget
+                elif reasoning_effort == "xhigh":
+                    effort_thinking_type = "adaptive"
+                    effort_budget = request_caps.default_thinking_budget
+
+                # Resolve budget: kwargs > reasoning_effort > config > model default
+                budget_tokens = (
+                    kwargs.get("thinking_budget_tokens")
+                    or effort_budget
+                    or self.config.get("thinking_budget_tokens")
+                    or request_caps.default_thinking_budget
+                )
+                budget_tokens = max(1024, int(budget_tokens))
+                max_budget_tokens = (
+                    model_ceiling
+                    if params.get("tools")
+                    else max(1024, model_ceiling - 1)
+                )
+                budget_tokens = min(budget_tokens, max_budget_tokens)
+                # Default buffer raised from 4096 → 8192 to accommodate Opus 4.7's
+                # denser tokenizer (1.0–1.35× more tokens for equivalent text).
+                buffer_tokens = kwargs.get("thinking_budget_buffer") or self.config.get(
+                    "thinking_budget_buffer", 8192
+                )
+
+                thinking_budget = budget_tokens
+
+                # Resolve thinking_type: kwargs > reasoning_effort > config > "adaptive"
+                thinking_type = (
+                    kwargs.get("thinking_type")
+                    or effort_thinking_type
+                    or self.config.get("thinking_type", "adaptive")
+                )
+
+                # Adaptive thinking: model controls its own budget.  The API schema
+                # is a discriminated union — "adaptive" accepts NO extra fields
+                # (budget_tokens is forbidden).  Fall back to "enabled" with an
+                # explicit budget when the model doesn't support adaptive.
+                if (
+                    thinking_type == "adaptive"
+                    and request_caps.supports_adaptive_thinking
+                ):
+                    params["thinking"] = {"type": "adaptive"}
+                    resolved_thinking_type = "adaptive"
+                elif not request_caps.supports_manual_thinking:
+                    # Model rejects type="enabled" (e.g. Opus 4.7+) — force adaptive.
+                    # This is safe because models that don't support manual thinking
+                    # always support adaptive thinking.
+                    if thinking_type != "adaptive":
+                        logger.info(
+                            "[PROVIDER] Model %s does not support manual thinking "
+                            "(type='enabled') — using adaptive instead of '%s'",
+                            params["model"],
+                            thinking_type,
+                        )
+                    params["thinking"] = {"type": "adaptive"}
+                    resolved_thinking_type = "adaptive"
+                else:
+                    # "enabled" mode (all thinking-capable models): explicit budget
+                    if thinking_type == "adaptive":
+                        # Caller asked for adaptive but model doesn't support it
+                        thinking_type = "enabled"
+                    resolved_thinking_type = thinking_type
+                    params["thinking"] = {
+                        "type": thinking_type,
+                        "budget_tokens": budget_tokens,
+                    }
+
+                # For models where thinking.display defaults to "omitted" (Opus 4.7+),
+                # request "summarized" so thinking content is visible to users.
+                # Users can override via config or kwargs to "omitted" if desired.
+                if request_caps.thinking_display_required:
+                    display = kwargs.get(
+                        "thinking_display",
+                        self.config.get("thinking_display", "summarized"),
                     )
-                params["thinking"] = {"type": "adaptive"}
-                resolved_thinking_type = "adaptive"
-            else:
-                # "enabled" mode (all thinking-capable models): explicit budget
-                if thinking_type == "adaptive":
-                    # Caller asked for adaptive but model doesn't support it
-                    thinking_type = "enabled"
-                resolved_thinking_type = thinking_type
-                params["thinking"] = {
-                    "type": thinking_type,
-                    "budget_tokens": budget_tokens,
-                }
+                    params["thinking"]["display"] = display
 
-            # For models where thinking.display defaults to "omitted" (Opus 4.7+),
-            # request "summarized" so thinking content is visible to users.
-            # Users can override via config or kwargs to "omitted" if desired.
-            if request_caps.thinking_display_required:
-                display = kwargs.get(
-                    "thinking_display",
-                    self.config.get("thinking_display", "summarized"),
+                # Anthropic requires temperature=1.0 when thinking is enabled
+                # on models that support sampling. Non-sampling models (4.7+)
+                # ignore temperature entirely — don't inject it.
+                if request_caps.supports_sampling:
+                    params["temperature"] = 1.0
+
+                # Ensure max_tokens accommodates thinking budget + response.
+                # For adaptive mode the model manages its own budget within
+                # max_tokens, so we still need a generous ceiling.
+                # Cap to the model's API-enforced output ceiling so we never
+                # exceed what the backend allows (e.g. Opus 4.5 caps at 64K).
+                target_tokens = min(budget_tokens + buffer_tokens, model_ceiling)
+                if params.get("max_tokens"):
+                    params["max_tokens"] = min(
+                        max(params["max_tokens"], target_tokens), model_ceiling
+                    )
+                else:
+                    params["max_tokens"] = target_tokens
+
+                interleaved_thinking_enabled = bool(params.get("tools"))
+
+                logger.info(
+                    "[PROVIDER] Extended thinking enabled (budget=%s, buffer=%s, temperature=%s, max_tokens=%s, interleaved=%s)",
+                    thinking_budget,
+                    buffer_tokens,
+                    params.get("temperature", "n/a"),
+                    params["max_tokens"],
+                    interleaved_thinking_enabled,
                 )
-                params["thinking"]["display"] = display
-
-            # Anthropic requires temperature=1.0 when thinking is enabled
-            # on models that support sampling. Non-sampling models (4.7+)
-            # ignore temperature entirely — don't inject it.
-            if request_caps.supports_sampling:
-                params["temperature"] = 1.0
-
-            # Ensure max_tokens accommodates thinking budget + response.
-            # For adaptive mode the model manages its own budget within
-            # max_tokens, so we still need a generous ceiling.
-            # Cap to the model's API-enforced output ceiling so we never
-            # exceed what the backend allows (e.g. Opus 4.5 caps at 64K).
-            target_tokens = min(budget_tokens + buffer_tokens, model_ceiling)
-            if params.get("max_tokens"):
-                params["max_tokens"] = min(
-                    max(params["max_tokens"], target_tokens), model_ceiling
-                )
-            else:
-                params["max_tokens"] = target_tokens
-
-            interleaved_thinking_enabled = bool(params.get("tools"))
-
-            logger.info(
-                "[PROVIDER] Extended thinking enabled (budget=%s, buffer=%s, temperature=%s, max_tokens=%s, interleaved=%s)",
-                thinking_budget,
-                buffer_tokens,
-                params.get("temperature", "n/a"),
-                params["max_tokens"],
-                interleaved_thinking_enabled,
-            )
 
         if params.get("max_tokens") and params["max_tokens"] > model_ceiling:
             logger.info(
