@@ -3647,6 +3647,13 @@ class AnthropicProvider:
                 logger.debug(
                     f"[PROVIDER] Web search returned {len(citations)} citations"
                 )
+            else:
+                # Unknown block type (e.g. 'fallback' from Fable 5 / Mythos-class
+                # models) — skip gracefully rather than crashing.
+                logger.debug(
+                    "[PROVIDER] Skipping unknown content block type: %s", block.type
+                )
+                continue
 
         # Build usage with named kernel fields + provider-native extras for
         # backward compatibility.  reasoning_tokens is intentionally None:
