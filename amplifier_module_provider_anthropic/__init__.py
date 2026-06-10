@@ -869,7 +869,7 @@ class AnthropicProvider:
     def _detect_family(model_id: str) -> str:
         """Detect the Claude model family from a model ID string."""
         model_lower = model_id.lower()
-        for family in ("opus", "sonnet", "haiku"):
+        for family in ("fable", "mythos", "opus", "sonnet", "haiku"):
             if family in model_lower:
                 return family
         return "sonnet"  # Default to sonnet for unknown models
@@ -905,6 +905,7 @@ class AnthropicProvider:
 
         Version requirements
         --------------------
+        * **Fable 5 / Mythos 5** — Mythos-class, always-on adaptive thinking, 128K output, no manual thinking
         * **Opus 4.6+** — 1M context, adaptive thinking, 128K output
         * **Sonnet 4.5+** — 1M context, extended thinking, 64K output
         * **Haiku 4.5+** — fast inference, extended thinking, no adaptive, no 1M
@@ -916,6 +917,32 @@ class AnthropicProvider:
         family = cls._detect_family(model_id)
         major, minor = cls._detect_version(model_id, family)
         version_known = (major, minor) != (0, 0)
+
+        if family in ("fable", "mythos"):
+            return ModelCapabilities(
+                family=family,
+                max_output_tokens=128000,
+                supports_1m=True,
+                supports_thinking=True,
+                supports_adaptive_thinking=True,
+                supports_manual_thinking=False,
+                thinking_always_on=True,
+                supports_output_config=True,
+                supports_task_budget=True,
+                supports_sampling=False,
+                thinking_display_required=True,
+                supported_efforts=("low", "medium", "high", "xhigh", "max"),
+                supports_speed=False,
+                supports_inline_system=True,
+                default_thinking_budget=0,  # not used — adaptive only
+                capability_tags=(
+                    "tools",
+                    "thinking",
+                    "streaming",
+                    "json_mode",
+                    "vision",
+                ),
+            )
 
         if family == "opus":
             is_46_plus = not version_known or (major, minor) >= (4, 6)

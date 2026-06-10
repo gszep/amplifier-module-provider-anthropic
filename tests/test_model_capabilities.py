@@ -366,3 +366,79 @@ class TestThinkingAlwaysOn:
         """Sonnet models do NOT have always-on thinking."""
         caps = AnthropicProvider._get_capabilities("claude-sonnet-4-6")
         assert caps.thinking_always_on is False
+
+
+class TestGetCapabilitiesFable5:
+    """Fable 5 / Mythos 5 capability matrix."""
+
+    def test_fable5_family_detected(self):
+        """claude-fable-5 detects family='fable'."""
+        caps = AnthropicProvider._get_capabilities("claude-fable-5")
+        assert caps.family == "fable"
+
+    def test_fable5_thinking_always_on(self):
+        caps = AnthropicProvider._get_capabilities("claude-fable-5")
+        assert caps.thinking_always_on is True
+
+    def test_fable5_supports_1m(self):
+        caps = AnthropicProvider._get_capabilities("claude-fable-5")
+        assert caps.supports_1m is True
+
+    def test_fable5_max_output_128k(self):
+        caps = AnthropicProvider._get_capabilities("claude-fable-5")
+        assert caps.max_output_tokens == 128000
+
+    def test_fable5_supports_adaptive_thinking(self):
+        caps = AnthropicProvider._get_capabilities("claude-fable-5")
+        assert caps.supports_adaptive_thinking is True
+
+    def test_fable5_no_manual_thinking(self):
+        """Manual thinking (budget_tokens) is not accepted on Fable 5."""
+        caps = AnthropicProvider._get_capabilities("claude-fable-5")
+        assert caps.supports_manual_thinking is False
+
+    def test_fable5_all_effort_levels(self):
+        """Fable 5 supports all 5 effort levels including max."""
+        caps = AnthropicProvider._get_capabilities("claude-fable-5")
+        assert caps.supported_efforts == ("low", "medium", "high", "xhigh", "max")
+
+    def test_fable5_no_speed(self):
+        """Speed mode is NOT supported on Fable 5 (spike confirmed)."""
+        caps = AnthropicProvider._get_capabilities("claude-fable-5")
+        assert caps.supports_speed is False
+
+    def test_fable5_inline_system(self):
+        """Inline system messages are supported (spike confirmed schema exists)."""
+        caps = AnthropicProvider._get_capabilities("claude-fable-5")
+        assert caps.supports_inline_system is True
+
+    def test_fable5_thinking_display_required(self):
+        """display defaults to 'omitted' on Fable 5 — same as Opus 4.8."""
+        caps = AnthropicProvider._get_capabilities("claude-fable-5")
+        assert caps.thinking_display_required is True
+
+    def test_fable5_no_sampling(self):
+        caps = AnthropicProvider._get_capabilities("claude-fable-5")
+        assert caps.supports_sampling is False
+
+    def test_fable5_supports_output_config(self):
+        caps = AnthropicProvider._get_capabilities("claude-fable-5")
+        assert caps.supports_output_config is True
+
+    def test_fable5_supports_task_budget(self):
+        caps = AnthropicProvider._get_capabilities("claude-fable-5")
+        assert caps.supports_task_budget is True
+
+    def test_mythos5_family_detected(self):
+        """claude-mythos-5 detects family='mythos'."""
+        caps = AnthropicProvider._get_capabilities("claude-mythos-5")
+        assert caps.family == "mythos"
+
+    def test_mythos5_thinking_always_on(self):
+        caps = AnthropicProvider._get_capabilities("claude-mythos-5")
+        assert caps.thinking_always_on is True
+
+    def test_unknown_fable_version_assumes_latest(self):
+        """Unknown version assumes latest (thinking_always_on=True)."""
+        caps = AnthropicProvider._get_capabilities("claude-fable-latest")
+        assert caps.thinking_always_on is True
