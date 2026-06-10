@@ -4,7 +4,7 @@ Validates that _get_capabilities returns correct max_output_tokens,
 thinking budgets, and feature flags for each model family and version.
 """
 
-from amplifier_module_provider_anthropic import AnthropicProvider
+from amplifier_module_provider_anthropic import AnthropicProvider, ModelCapabilities
 
 
 class TestDetectFamily:
@@ -347,3 +347,22 @@ class TestSpeedConfigPlumbing:
             fast_mode=False,
         )
         assert BETA_HEADER_FAST_MODE not in headers
+
+
+class TestThinkingAlwaysOn:
+    """thinking_always_on: False by default; True for fable/mythos families (Task 3)."""
+
+    def test_thinking_always_on_default_false(self):
+        """ModelCapabilities defaults thinking_always_on to False."""
+        caps = ModelCapabilities(family="test")
+        assert caps.thinking_always_on is False
+
+    def test_opus_thinking_always_on_false(self):
+        """Opus models do NOT have always-on thinking."""
+        caps = AnthropicProvider._get_capabilities("claude-opus-4-8")
+        assert caps.thinking_always_on is False
+
+    def test_sonnet_thinking_always_on_false(self):
+        """Sonnet models do NOT have always-on thinking."""
+        caps = AnthropicProvider._get_capabilities("claude-sonnet-4-6")
+        assert caps.thinking_always_on is False

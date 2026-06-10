@@ -287,6 +287,9 @@ class ModelCapabilities:
     supports_inline_system: bool = (
         False  # True = model accepts role='system' in messages[]
     )
+    thinking_always_on: bool = (
+        False  # True = thinking is always active; NEVER send thinking:{type:disabled}
+    )
     capability_tags: tuple[str, ...] = ("tools", "streaming", "json_mode")
 
 
@@ -1082,6 +1085,7 @@ class AnthropicProvider:
             supported_efforts=base_caps.supported_efforts,
             supports_speed=base_caps.supports_speed,
             supports_inline_system=base_caps.supports_inline_system,
+            thinking_always_on=base_caps.thinking_always_on,
             default_thinking_budget=default_thinking_budget,
             capability_tags=tuple(capability_tags),
         )
@@ -2448,9 +2452,7 @@ class AnthropicProvider:
                     )
                     try:
                         async with asyncio.timeout(self.timeout):
-                            async with self.client.messages.stream(
-                                **params
-                            ) as stream:
+                            async with self.client.messages.stream(**params) as stream:
                                 async for event in stream:
                                     etype = type(event).__name__
                                     idx = getattr(event, "index", None)
@@ -2473,7 +2475,10 @@ class AnthropicProvider:
                                             # Tool-use blocks carry a name so the
                                             # streaming overlay's placeholder can
                                             # show "Building tool call: <name>..."
-                                            if btype == "tool_use" and block is not None:
+                                            if (
+                                                btype == "tool_use"
+                                                and block is not None
+                                            ):
                                                 name = getattr(block, "name", None)
                                                 if name:
                                                     payload["name"] = name
@@ -2505,9 +2510,7 @@ class AnthropicProvider:
                                                 )
                                                 partial_emitted = True
                                         elif dtype == "thinking_delta":
-                                            text = (
-                                                getattr(delta, "thinking", "") or ""
-                                            )
+                                            text = getattr(delta, "thinking", "") or ""
                                             if text and hooks_available:
                                                 await self.coordinator.hooks.emit(
                                                     "llm:stream_block_delta",
