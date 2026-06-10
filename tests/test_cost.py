@@ -307,3 +307,48 @@ def test_convert_no_multiplier_for_standard_speed():
     assert result.usage.cost_usd == Decimal("5.00"), (
         f"Expected Decimal('5.00') for speed='standard' on claude-opus-4-8, got {result.usage.cost_usd!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# (r) Fable 5 pricing: 1M input -> $10.00, 1M output -> $50.00
+# ---------------------------------------------------------------------------
+def test_fable5_input_tokens_cost():
+    """claude-fable-5: 1M input -> $10.00"""
+    result = compute_cost("claude-fable-5", input_tokens=1_000_000)
+    assert result == Decimal("10.00"), f"Expected Decimal('10.00'), got {result!r}"
+
+
+def test_fable5_output_tokens_cost():
+    """claude-fable-5: 1M output -> $50.00"""
+    result = compute_cost("claude-fable-5", output_tokens=1_000_000)
+    assert result == Decimal("50.00"), f"Expected Decimal('50.00'), got {result!r}"
+
+
+def test_fable5_cache_read_cost():
+    """claude-fable-5: 1M cache read -> $1.00"""
+    result = compute_cost("claude-fable-5", cache_read_input_tokens=1_000_000)
+    assert result == Decimal("1.00"), f"Expected Decimal('1.00'), got {result!r}"
+
+
+def test_fable5_cache_write_cost():
+    """claude-fable-5: 1M cache write (5-min) -> $12.50"""
+    result = compute_cost("claude-fable-5", cache_creation_input_tokens=1_000_000)
+    assert result == Decimal("12.50"), f"Expected Decimal('12.50'), got {result!r}"
+
+
+def test_fable5_not_in_fast_eligible_models():
+    """claude-fable-5 must NOT be in _FAST_ELIGIBLE_MODELS (no speed mode)."""
+    from amplifier_module_provider_anthropic._cost import _FAST_ELIGIBLE_MODELS
+
+    assert "claude-fable-5" not in _FAST_ELIGIBLE_MODELS
+
+
+def test_fable5_exact_2x_opus48():
+    """Every fable-5 rate is exactly 2x the corresponding opus-4-8 rate."""
+    fable_input = compute_cost("claude-fable-5", input_tokens=1_000_000)
+    opus_input = compute_cost("claude-opus-4-8", input_tokens=1_000_000)
+    assert fable_input == opus_input * 2
+
+    fable_output = compute_cost("claude-fable-5", output_tokens=1_000_000)
+    opus_output = compute_cost("claude-opus-4-8", output_tokens=1_000_000)
+    assert fable_output == opus_output * 2

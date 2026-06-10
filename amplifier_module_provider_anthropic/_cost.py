@@ -113,6 +113,25 @@ _RATES: dict[str, dict[str, Decimal]] = {
         "cache_write_per_m": Decimal("6.25"),
     },
     # ------------------------------------------------------------------
+    # Claude Fable 5 / Mythos 5  ($10 / $50 / $1.00 / $12.50)
+    # Mythos-class models. Exactly 2x Opus 4.8 on every rate.
+    # NOTE: A 1-hour cache write tier exists at $20.00/MTok but Anthropic's
+    # usage object returns a single cache_creation_input_tokens count and
+    # does not distinguish TTLs — track the 5-minute rate ($12.50) here.
+    # ------------------------------------------------------------------
+    "claude-fable-5": {
+        "input_per_m": Decimal("10.00"),
+        "output_per_m": Decimal("50.00"),
+        "cache_read_per_m": Decimal("1.00"),
+        "cache_write_per_m": Decimal("12.50"),
+    },
+    "claude-mythos-5": {
+        "input_per_m": Decimal("10.00"),
+        "output_per_m": Decimal("50.00"),
+        "cache_read_per_m": Decimal("1.00"),
+        "cache_write_per_m": Decimal("12.50"),
+    },
+    # ------------------------------------------------------------------
     # Claude Haiku 3.5  ($0.80 / $4.00 / $0.08 / $1.00)
     # ------------------------------------------------------------------
     "claude-haiku-3-5-20250929": {
