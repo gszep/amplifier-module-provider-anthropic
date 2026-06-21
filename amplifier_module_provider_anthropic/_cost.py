@@ -233,3 +233,47 @@ def compute_cost(
         cost *= 2
 
     return cost
+
+
+# ---------------------------------------------------------------------------
+# Public pricing accessors (for catalog endpoints like /v1/models)
+# ---------------------------------------------------------------------------
+
+
+def get_pricing_per_million(model: str) -> dict[str, float] | None:
+    """Return per-million-token pricing for *model*, or None when unknown.
+
+    Returned shape matches the cost contract surfaced through
+    ``/v1/models`` and downstream into opencode's ``provider.<id>.models.<id>.cost``
+    block::
+
+        {
+            "input":       float,   # USD per 1M fresh input tokens
+            "output":      float,   # USD per 1M output tokens
+            "cache_read":  float,   # USD per 1M cache-read input tokens
+            "cache_write": float,   # USD per 1M cache-creation input tokens
+        }
+
+    Why ``float`` (not ``Decimal``) here: opencode's config schema rejects
+    string/Decimal values for the ``cost`` numeric subfields, so the wire
+    must carry a JSON number. We accept the precision loss because catalog
+    pricing is display-only -- the load-bearing per-turn cost ``compute_cost``
+    still uses Decimal end-to-end.
+
+    Returns
+    -------
+    dict | None
+        Per-million pricing dict, or ``None`` if *model* is not in the
+        rate table. ``None`` signals "we don't know this model's price"
+        and lets the catalog endpoint omit the ``cost`` block rather than
+        emit zeros (which would lie to downstream cost calculators).
+    """
+    rates = _RATES.get(model)
+    if rates is None:
+        return None
+    return {
+        "input": float(rates["input_per_m"]),
+        "output": float(rates["output_per_m"]),
+        "cache_read": float(rates["cache_read_per_m"]),
+        "cache_write": float(rates["cache_write_per_m"]),
+    }

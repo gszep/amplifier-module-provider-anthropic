@@ -58,7 +58,7 @@ from anthropic._exceptions import (
     OverloadedError as AnthropicOverloadedError,
 )  # Not exported in public API as of SDK v0.96.0 (private import still works)
 
-from ._cost import compute_cost
+from ._cost import compute_cost, get_pricing_per_million
 
 
 @dataclass
@@ -843,6 +843,20 @@ class AnthropicProvider:
                     else caps.base_context_window
                 )
 
+                defaults_dict: dict[str, Any] = {
+                    "temperature": 0.7,
+                    "max_tokens": caps.max_output_tokens,
+                }
+                # Surface per-model pricing into ``defaults`` so catalog
+                # endpoints (e.g. amplifier-agent's ``/v1/models``) can lift
+                # it to a first-class ``cost`` field on the wire. ModelInfo
+                # has no first-class ``cost`` field today; ``defaults`` is
+                # the open dict the kernel already exposes verbatim, so we
+                # avoid a kernel schema change.
+                pricing = get_pricing_per_million(model_id)
+                if pricing is not None:
+                    defaults_dict["cost_per_million"] = pricing
+
                 result.append(
                     ModelInfo(
                         id=model_id,
@@ -850,10 +864,7 @@ class AnthropicProvider:
                         context_window=context_window,
                         max_output_tokens=caps.max_output_tokens,
                         capabilities=list(caps.capability_tags),
-                        defaults={
-                            "temperature": 0.7,
-                            "max_tokens": caps.max_output_tokens,
-                        },
+                        defaults=defaults_dict,
                     )
                 )
 
@@ -2448,9 +2459,7 @@ class AnthropicProvider:
                     )
                     try:
                         async with asyncio.timeout(self.timeout):
-                            async with self.client.messages.stream(
-                                **params
-                            ) as stream:
+                            async with self.client.messages.stream(**params) as stream:
                                 async for event in stream:
                                     etype = type(event).__name__
                                     idx = getattr(event, "index", None)
@@ -2473,7 +2482,10 @@ class AnthropicProvider:
                                             # Tool-use blocks carry a name so the
                                             # streaming overlay's placeholder can
                                             # show "Building tool call: <name>..."
-                                            if btype == "tool_use" and block is not None:
+                                            if (
+                                                btype == "tool_use"
+                                                and block is not None
+                                            ):
                                                 name = getattr(block, "name", None)
                                                 if name:
                                                     payload["name"] = name
@@ -2505,9 +2517,7 @@ class AnthropicProvider:
                                                 )
                                                 partial_emitted = True
                                         elif dtype == "thinking_delta":
-                                            text = (
-                                                getattr(delta, "thinking", "") or ""
-                                            )
+                                            text = getattr(delta, "thinking", "") or ""
                                             if text and hooks_available:
                                                 await self.coordinator.hooks.emit(
                                                     "llm:stream_block_delta",
