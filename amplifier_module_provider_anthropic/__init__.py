@@ -974,11 +974,28 @@ class AnthropicProvider:
         if family == "sonnet":
             is_46_plus = not version_known or (major, minor) >= (4, 6)
             is_45_plus = is_46_plus or (major, minor) >= (4, 5)
+            # Sonnet 5 (Jun 2026) gains the output_config effort API through the
+            # "xhigh" tier and the same thinking surface as Opus 4.7+: adaptive
+            # thinking only (manual type="enabled" returns HTTP 400), thinking
+            # block displayed by default, and task-budget support. Verified live
+            # against claude-sonnet-5 (2026-07-01): output_config.effort=xhigh
+            # -> 200; thinking.type=enabled -> 400. Sonnet has no "max" effort
+            # and no Opus-only fast mode.
+            is_5_plus = not version_known or (major, minor) >= (5, 0)
             return ModelCapabilities(
                 family="sonnet",
                 supports_1m=is_46_plus,
                 supports_thinking=True,
                 supports_adaptive_thinking=is_46_plus,
+                supports_manual_thinking=not is_5_plus,
+                supports_output_config=is_5_plus,
+                supports_task_budget=is_5_plus,
+                thinking_display_required=is_5_plus,
+                supported_efforts=(
+                    ("low", "medium", "high", "xhigh")
+                    if is_5_plus
+                    else ("low", "medium", "high")
+                ),
                 default_thinking_budget=32000,
                 capability_tags=(
                     "tools",

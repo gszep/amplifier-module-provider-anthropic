@@ -4,7 +4,7 @@ Validates that _get_capabilities returns correct max_output_tokens,
 thinking budgets, and feature flags for each model family and version.
 """
 
-from amplifier_module_provider_anthropic import AnthropicProvider
+from amplifier_module_provider_anthropic import AnthropicProvider, _RuntimeModelInfo
 
 
 class TestDetectFamily:
@@ -347,3 +347,60 @@ class TestSpeedConfigPlumbing:
             fast_mode=False,
         )
         assert BETA_HEADER_FAST_MODE not in headers
+
+
+class TestGetCapabilitiesSonnet5:
+    """Sonnet 5 (Jun 2026): output_config effort API through xhigh, adaptive-only
+    thinking (manual type='enabled' -> HTTP 400), displayed thinking, task budget.
+    Modeled on the Opus 4.7+ surface + the Sonnet 5 launch; no 'max', no fast mode."""
+
+    def test_sonnet_5_supports_output_config(self):
+        caps = AnthropicProvider._get_capabilities("claude-sonnet-5")
+        assert caps.supports_output_config is True
+
+    def test_sonnet_5_efforts_through_xhigh(self):
+        caps = AnthropicProvider._get_capabilities("claude-sonnet-5")
+        assert caps.supported_efforts == ("low", "medium", "high", "xhigh")
+        assert "max" not in caps.supported_efforts
+
+    def test_sonnet_5_thinking_surface(self):
+        caps = AnthropicProvider._get_capabilities("claude-sonnet-5")
+        assert caps.supports_adaptive_thinking is True
+        assert caps.supports_manual_thinking is False
+        assert caps.thinking_display_required is True
+        assert caps.supports_task_budget is True
+
+    def test_sonnet_5_no_speed_no_fast_mode(self):
+        """Sonnet 5 must NOT advertise Opus-only fast mode."""
+        caps = AnthropicProvider._get_capabilities("claude-sonnet-5")
+        assert caps.supports_speed is False
+
+    def test_sonnet_46_unchanged_by_sonnet5_gate(self):
+        """Regression guard: Sonnet 4.6 keeps default efforts and no output_config."""
+        caps = AnthropicProvider._get_capabilities("claude-sonnet-4-6")
+        assert caps.supported_efforts == ("low", "medium", "high")
+        assert caps.supports_output_config is False
+        assert caps.supports_manual_thinking is True
+
+    def test_sonnet_unknown_version_assumes_5(self):
+        """Forward-compat: a version-less sonnet id assumes latest (5+) so new
+        aliases get the current surface. Mirrors test_opus_unknown_version_assumes_48."""
+        caps = AnthropicProvider._get_capabilities("claude-sonnet-latest")
+        assert caps.supports_output_config is True
+        assert "xhigh" in caps.supported_efforts
+        assert caps.supports_manual_thinking is False
+
+    def test_sonnet_5_caps_survive_runtime_override(self):
+        """The is_5_plus flags must not silently reset to dataclass defaults when
+        _apply_runtime_capability_overrides reconstructs ModelCapabilities on a
+        live request. A non-None _RuntimeModelInfo triggers the construction path
+        (None would early-return base_caps and prove nothing)."""
+        base = AnthropicProvider._get_capabilities("claude-sonnet-5")
+        overridden = AnthropicProvider._apply_runtime_capability_overrides(
+            base, _RuntimeModelInfo()
+        )
+        assert overridden.supports_output_config is True
+        assert overridden.supported_efforts == ("low", "medium", "high", "xhigh")
+        assert overridden.supports_manual_thinking is False
+        assert overridden.supports_task_budget is True
+        assert overridden.thinking_display_required is True
