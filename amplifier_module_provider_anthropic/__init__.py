@@ -26,6 +26,7 @@ from dataclasses import field
 from amplifier_core import ConfigField
 from amplifier_core import ModelInfo
 from amplifier_core import ModuleCoordinator
+from amplifier_core import Pricing
 from amplifier_core import ProviderInfo
 from amplifier_core import TextContent
 from amplifier_core import ThinkingContent
@@ -58,6 +59,7 @@ from anthropic._exceptions import (
     OverloadedError as AnthropicOverloadedError,
 )  # Not exported in public API as of SDK v0.96.0 (private import still works)
 
+from ._cost import _RATES
 from ._cost import compute_cost
 
 
@@ -410,6 +412,30 @@ async def mount(coordinator: ModuleCoordinator, config: dict[str, Any] | None = 
         await provider.close()
 
     return cleanup
+
+
+def _build_pricing(model_id: str) -> Pricing | None:
+    """Build a Pricing object for a model from the internal _RATES table.
+
+    Returns None if the model has no entry in _RATES.
+    """
+    rates = _RATES.get(model_id)
+    if rates is None:
+        return None
+    return Pricing(
+        input_per_million=float(rates["input_per_m"]),
+        output_per_million=float(rates["output_per_m"]),
+        cache_read_per_million=(
+            float(rates["cache_read_per_m"]) if "cache_read_per_m" in rates else None
+        ),
+        cache_write_per_million=(
+            float(rates["cache_write_per_m"])
+            if "cache_write_per_m" in rates
+            else None
+        ),
+        currency="USD",
+        as_of=None,
+    )
 
 
 class AnthropicProvider:
@@ -854,6 +880,7 @@ class AnthropicProvider:
                             "temperature": 0.7,
                             "max_tokens": caps.max_output_tokens,
                         },
+                        pricing=_build_pricing(model_id),
                     )
                 )
 
