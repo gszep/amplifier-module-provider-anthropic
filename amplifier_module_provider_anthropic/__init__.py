@@ -59,7 +59,7 @@ from anthropic._exceptions import (
     OverloadedError as AnthropicOverloadedError,
 )  # Not exported in public API as of SDK v0.96.0 (private import still works)
 
-from ._cost import _RATES
+from ._cost import _find_rates
 from ._cost import compute_cost
 
 
@@ -417,9 +417,15 @@ async def mount(coordinator: ModuleCoordinator, config: dict[str, Any] | None = 
 def _build_pricing(model_id: str) -> Pricing | None:
     """Build a Pricing object for a model from the internal _RATES table.
 
-    Returns None if the model has no entry in _RATES.
+    Uses _find_rates() (amplifier_module_provider_anthropic/_cost.py) to
+    tolerate the snapshot-id/alias asymmetry in _RATES -- e.g. an API
+    response of "claude-sonnet-4-6-20260201" resolves to the bare
+    "claude-sonnet-4-6" entry, and "claude-haiku-3-5" resolves to the dated
+    "claude-haiku-3-5-20250929" entry.
+
+    Returns None if the model has no exact or normalized match in _RATES.
     """
-    rates = _RATES.get(model_id)
+    rates = _find_rates(model_id)
     if rates is None:
         return None
     return Pricing(
@@ -429,12 +435,9 @@ def _build_pricing(model_id: str) -> Pricing | None:
             float(rates["cache_read_per_m"]) if "cache_read_per_m" in rates else None
         ),
         cache_write_per_million=(
-            float(rates["cache_write_per_m"])
-            if "cache_write_per_m" in rates
-            else None
+            float(rates["cache_write_per_m"]) if "cache_write_per_m" in rates else None
         ),
         currency="USD",
-        as_of=None,
     )
 
 
@@ -2475,9 +2478,7 @@ class AnthropicProvider:
                     )
                     try:
                         async with asyncio.timeout(self.timeout):
-                            async with self.client.messages.stream(
-                                **params
-                            ) as stream:
+                            async with self.client.messages.stream(**params) as stream:
                                 async for event in stream:
                                     etype = type(event).__name__
                                     idx = getattr(event, "index", None)
@@ -2500,7 +2501,10 @@ class AnthropicProvider:
                                             # Tool-use blocks carry a name so the
                                             # streaming overlay's placeholder can
                                             # show "Building tool call: <name>..."
-                                            if btype == "tool_use" and block is not None:
+                                            if (
+                                                btype == "tool_use"
+                                                and block is not None
+                                            ):
                                                 name = getattr(block, "name", None)
                                                 if name:
                                                     payload["name"] = name
@@ -2532,9 +2536,7 @@ class AnthropicProvider:
                                                 )
                                                 partial_emitted = True
                                         elif dtype == "thinking_delta":
-                                            text = (
-                                                getattr(delta, "thinking", "") or ""
-                                            )
+                                            text = getattr(delta, "thinking", "") or ""
                                             if text and hooks_available:
                                                 await self.coordinator.hooks.emit(
                                                     "llm:stream_block_delta",

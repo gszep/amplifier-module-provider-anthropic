@@ -18,6 +18,7 @@ Usage
 
 from __future__ import annotations
 
+import re
 from decimal import Decimal
 
 # ---------------------------------------------------------------------------
@@ -233,3 +234,53 @@ def compute_cost(
         cost *= 2
 
     return cost
+
+
+# Anthropic dated-snapshot suffix, e.g. the "-20250929" in
+# "claude-sonnet-4-5-20250929".
+_DATE_SUFFIX_RE = re.compile(r"-\d{8}$")
+
+
+def _normalize_model_id(model_id: str) -> str:
+    """Strip a trailing Anthropic dated-snapshot suffix (``-YYYYMMDD``), if present.
+
+    Bare aliases (e.g. ``"claude-sonnet-4-6"``) are returned unchanged.
+    """
+    return _DATE_SUFFIX_RE.sub("", model_id)
+
+
+def _find_rates(model_id: str) -> dict[str, Decimal] | None:
+    """Look up ``_RATES`` for *model_id*, tolerating snapshot/alias asymmetry.
+
+    ``_RATES`` is not consistently populated with both a bare-alias entry
+    (e.g. ``"claude-sonnet-4-6"``) and a dated-snapshot entry (e.g.
+    ``"claude-sonnet-4-6-20260101"``) for every model. A plain
+    ``_RATES.get(model_id)`` silently misses in two directions:
+
+    - An alias-only entry misses when the API returns a dated snapshot id
+      (e.g. ``"claude-sonnet-4-6"`` is in ``_RATES`` but the API returns
+      ``"claude-sonnet-4-6-20260201"``).
+    - A snapshot-only entry misses when the API returns the bare alias
+      (e.g. only ``"claude-haiku-3-5-20250929"`` is in ``_RATES`` but the
+      API returns ``"claude-haiku-3-5"``).
+
+    This function tries an exact match first, then falls back to comparing
+    *normalized* ids (date suffix stripped from both the query and each
+    ``_RATES`` key) so either shape resolves to the same rate entry.
+
+    Returns
+    -------
+    dict[str, Decimal] | None
+        The matching rate dict, or ``None`` if no exact or normalized match
+        exists.
+    """
+    rates = _RATES.get(model_id)
+    if rates is not None:
+        return rates
+
+    normalized_query = _normalize_model_id(model_id)
+    for key, value in _RATES.items():
+        if _normalize_model_id(key) == normalized_query:
+            return value
+
+    return None

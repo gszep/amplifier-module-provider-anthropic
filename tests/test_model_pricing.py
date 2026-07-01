@@ -43,3 +43,23 @@ class TestBuildPricing:
             assert pricing is not None, f"Expected pricing for {model_id}"
             assert pricing.input_per_million > 0
             assert pricing.output_per_million > 0
+
+    def test_dated_snapshot_of_bare_alias_resolves_via_find_rates(self):
+        """claude-sonnet-4-6 is alias-only in _RATES; a fabricated dated
+        snapshot of it must still resolve, via _find_rates() normalization.
+        """
+        rates = _RATES["claude-sonnet-4-6"]
+        pricing = _build_pricing("claude-sonnet-4-6-20260201")
+
+        assert pricing is not None
+        assert pricing.input_per_million == float(rates["input_per_m"])
+
+    def test_bare_alias_of_dated_only_entry_resolves_via_find_rates(self):
+        """claude-haiku-3-5 has only a dated entry in _RATES; the bare alias
+        must still resolve, via _find_rates() normalization.
+        """
+        rates = _RATES["claude-haiku-3-5-20250929"]
+        pricing = _build_pricing("claude-haiku-3-5")
+
+        assert pricing is not None
+        assert pricing.input_per_million == float(rates["input_per_m"])
