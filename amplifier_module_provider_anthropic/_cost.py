@@ -139,6 +139,8 @@ _RATES: dict[str, dict[str, Decimal]] = {
     },
     # ------------------------------------------------------------------
     # Deprecated models
+    # Retained for historical cost accounting; not expected from
+    # list_models() post-retirement.
     # ------------------------------------------------------------------
     "claude-3-haiku-20240307": {
         "input_per_m": Decimal("0.25"),
@@ -284,3 +286,29 @@ def _find_rates(model_id: str) -> dict[str, Decimal] | None:
             return value
 
     return None
+
+
+# ---------------------------------------------------------------------------
+# Module-load invariant: every _RATES entry carries all four rate fields.
+# ---------------------------------------------------------------------------
+_REQUIRED_RATE_KEYS = frozenset(
+    {"input_per_m", "output_per_m", "cache_read_per_m", "cache_write_per_m"}
+)
+
+
+def _validate_rates_table() -> None:
+    """Assert every ``_RATES`` entry carries all four required rate keys.
+
+    ``_build_pricing()`` (amplifier_module_provider_anthropic/__init__.py)
+    relies on every ``_RATES`` entry having all four keys and reads them
+    unconditionally. Fail fast at import time if a future entry omits one,
+    rather than letting a partial entry silently produce a ``KeyError`` deep
+    in ``_build_pricing()`` or reintroducing a defensive-but-dead fallback
+    path there.
+    """
+    for model_id, rate in _RATES.items():
+        missing = _REQUIRED_RATE_KEYS - rate.keys()
+        assert not missing, f"_RATES[{model_id!r}] is missing required keys: {missing}"
+
+
+_validate_rates_table()

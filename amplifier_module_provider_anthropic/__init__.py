@@ -431,12 +431,8 @@ def _build_pricing(model_id: str) -> Pricing | None:
     return Pricing(
         input_per_million=float(rates["input_per_m"]),
         output_per_million=float(rates["output_per_m"]),
-        cache_read_per_million=(
-            float(rates["cache_read_per_m"]) if "cache_read_per_m" in rates else None
-        ),
-        cache_write_per_million=(
-            float(rates["cache_write_per_m"]) if "cache_write_per_m" in rates else None
-        ),
+        cache_read_per_million=float(rates["cache_read_per_m"]),
+        cache_write_per_million=float(rates["cache_write_per_m"]),
         currency="USD",
     )
 
