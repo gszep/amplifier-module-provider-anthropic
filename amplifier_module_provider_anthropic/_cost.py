@@ -59,6 +59,19 @@ _RATES: dict[str, dict[str, Decimal]] = {
         "cache_read_per_m": Decimal("0.30"),
         "cache_write_per_m": Decimal("3.75"),
     },
+    # Claude Sonnet 5 (launched 2026-06-30; anthropic.com/news/claude-sonnet-5).
+    # Standard rates $3 / $15 (same as the Sonnet 4.x tier). NOTE: an
+    # introductory discount of $2 input / $10 output applies through
+    # 2026-08-31 only; we deliberately encode the durable STANDARD rates here
+    # (no time-windowed pricing logic anywhere in this table). The updated
+    # Sonnet 5 tokenizer maps the same text to ~1.0-1.35x more tokens, which
+    # raises effective per-request cost even at identical rates.
+    "claude-sonnet-5": {
+        "input_per_m": Decimal("3.00"),
+        "output_per_m": Decimal("15.00"),
+        "cache_read_per_m": Decimal("0.30"),
+        "cache_write_per_m": Decimal("3.75"),
+    },
     # ------------------------------------------------------------------
     # Claude Opus 4.5 / 4.6 / 4.7 family  ($5 / $25 / $0.50 / $6.25)
     # Source: anthropic.com/news/claude-opus-4-7 (verified 2026-05-07)
