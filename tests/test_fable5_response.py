@@ -1,4 +1,4 @@
-"""Tests for Fable 5 / Mythos-class API response handling.
+"""Tests for Fable 5 API response handling.
 
 Covers:
   (a) stop_reason='refusal' returns a ChatResponse without crashing

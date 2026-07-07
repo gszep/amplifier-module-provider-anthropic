@@ -390,7 +390,7 @@ class TestSpeedConfigPlumbing:
 
 
 class TestThinkingAlwaysOn:
-    """thinking_always_on: False by default; True for fable/mythos families (Task 3)."""
+    """thinking_always_on: False by default; True for the fable family (Task 3)."""
 
     def test_thinking_always_on_default_false(self):
         """ModelCapabilities defaults thinking_always_on to False."""
@@ -409,7 +409,7 @@ class TestThinkingAlwaysOn:
 
 
 class TestGetCapabilitiesFable5:
-    """Fable 5 / Mythos 5 capability matrix."""
+    """Fable 5 capability matrix."""
 
     def test_fable5_family_detected(self):
         """claude-fable-5 detects family='fable'."""
@@ -468,15 +468,6 @@ class TestGetCapabilitiesFable5:
     def test_fable5_supports_task_budget(self):
         caps = AnthropicProvider._get_capabilities("claude-fable-5")
         assert caps.supports_task_budget is True
-
-    def test_mythos5_family_detected(self):
-        """claude-mythos-5 detects family='mythos'."""
-        caps = AnthropicProvider._get_capabilities("claude-mythos-5")
-        assert caps.family == "mythos"
-
-    def test_mythos5_thinking_always_on(self):
-        caps = AnthropicProvider._get_capabilities("claude-mythos-5")
-        assert caps.thinking_always_on is True
 
     def test_unknown_fable_version_assumes_latest(self):
         """Unknown version assumes latest (thinking_always_on=True)."""
