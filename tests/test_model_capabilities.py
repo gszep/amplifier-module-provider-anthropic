@@ -4,7 +4,47 @@ Validates that _get_capabilities returns correct max_output_tokens,
 thinking budgets, and feature flags for each model family and version.
 """
 
-from amplifier_module_provider_anthropic import AnthropicProvider, _RuntimeModelInfo
+import asyncio
+from typing import Any, cast
+from unittest.mock import AsyncMock, MagicMock
+
+from amplifier_core import ModuleCoordinator
+from amplifier_core.message_models import ChatRequest, Message
+
+from amplifier_module_provider_anthropic import (
+    AnthropicProvider,
+    ModelCapabilities,
+    _RuntimeModelInfo,
+)
+
+from tests._helpers import DummyResponse, FakeCoordinator
+
+
+def _make_provider(default_model: str = "claude-fable-5") -> AnthropicProvider:
+    provider = AnthropicProvider(
+        api_key="test-key",
+        config={
+            "use_streaming": False,
+            "max_retries": 0,
+            "default_model": default_model,
+        },
+    )
+    provider.coordinator = cast(ModuleCoordinator, FakeCoordinator())
+    return provider
+
+
+def _make_raw_mock() -> MagicMock:
+    raw = MagicMock()
+    raw.parse.return_value = DummyResponse()
+    raw.headers = {}
+    return raw
+
+
+def _get_api_params(mock_create: AsyncMock) -> dict[str, Any]:
+    """Extract the kwargs passed to the API call."""
+    assert mock_create.await_count == 1
+    _, kwargs = mock_create.call_args
+    return kwargs
 
 
 class TestDetectFamily:
@@ -347,6 +387,125 @@ class TestSpeedConfigPlumbing:
             fast_mode=False,
         )
         assert BETA_HEADER_FAST_MODE not in headers
+
+
+class TestThinkingAlwaysOn:
+    """thinking_always_on: False by default; True for fable/mythos families (Task 3)."""
+
+    def test_thinking_always_on_default_false(self):
+        """ModelCapabilities defaults thinking_always_on to False."""
+        caps = ModelCapabilities(family="test")
+        assert caps.thinking_always_on is False
+
+    def test_opus_thinking_always_on_false(self):
+        """Opus models do NOT have always-on thinking."""
+        caps = AnthropicProvider._get_capabilities("claude-opus-4-8")
+        assert caps.thinking_always_on is False
+
+    def test_sonnet_thinking_always_on_false(self):
+        """Sonnet models do NOT have always-on thinking."""
+        caps = AnthropicProvider._get_capabilities("claude-sonnet-4-6")
+        assert caps.thinking_always_on is False
+
+
+class TestGetCapabilitiesFable5:
+    """Fable 5 / Mythos 5 capability matrix."""
+
+    def test_fable5_family_detected(self):
+        """claude-fable-5 detects family='fable'."""
+        caps = AnthropicProvider._get_capabilities("claude-fable-5")
+        assert caps.family == "fable"
+
+    def test_fable5_thinking_always_on(self):
+        caps = AnthropicProvider._get_capabilities("claude-fable-5")
+        assert caps.thinking_always_on is True
+
+    def test_fable5_supports_1m(self):
+        caps = AnthropicProvider._get_capabilities("claude-fable-5")
+        assert caps.supports_1m is True
+
+    def test_fable5_max_output_128k(self):
+        caps = AnthropicProvider._get_capabilities("claude-fable-5")
+        assert caps.max_output_tokens == 128000
+
+    def test_fable5_supports_adaptive_thinking(self):
+        caps = AnthropicProvider._get_capabilities("claude-fable-5")
+        assert caps.supports_adaptive_thinking is True
+
+    def test_fable5_no_manual_thinking(self):
+        """Manual thinking (budget_tokens) is not accepted on Fable 5."""
+        caps = AnthropicProvider._get_capabilities("claude-fable-5")
+        assert caps.supports_manual_thinking is False
+
+    def test_fable5_all_effort_levels(self):
+        """Fable 5 supports all 5 effort levels including max."""
+        caps = AnthropicProvider._get_capabilities("claude-fable-5")
+        assert caps.supported_efforts == ("low", "medium", "high", "xhigh", "max")
+
+    def test_fable5_no_speed(self):
+        """Speed mode is NOT supported on Fable 5 (spike confirmed)."""
+        caps = AnthropicProvider._get_capabilities("claude-fable-5")
+        assert caps.supports_speed is False
+
+    def test_fable5_inline_system(self):
+        """Inline system messages are supported (spike confirmed schema exists)."""
+        caps = AnthropicProvider._get_capabilities("claude-fable-5")
+        assert caps.supports_inline_system is True
+
+    def test_fable5_thinking_display_required(self):
+        """display defaults to 'omitted' on Fable 5 — same as Opus 4.8."""
+        caps = AnthropicProvider._get_capabilities("claude-fable-5")
+        assert caps.thinking_display_required is True
+
+    def test_fable5_no_sampling(self):
+        caps = AnthropicProvider._get_capabilities("claude-fable-5")
+        assert caps.supports_sampling is False
+
+    def test_fable5_supports_output_config(self):
+        caps = AnthropicProvider._get_capabilities("claude-fable-5")
+        assert caps.supports_output_config is True
+
+    def test_fable5_supports_task_budget(self):
+        caps = AnthropicProvider._get_capabilities("claude-fable-5")
+        assert caps.supports_task_budget is True
+
+    def test_mythos5_family_detected(self):
+        """claude-mythos-5 detects family='mythos'."""
+        caps = AnthropicProvider._get_capabilities("claude-mythos-5")
+        assert caps.family == "mythos"
+
+    def test_mythos5_thinking_always_on(self):
+        caps = AnthropicProvider._get_capabilities("claude-mythos-5")
+        assert caps.thinking_always_on is True
+
+    def test_unknown_fable_version_assumes_latest(self):
+        """Unknown version assumes latest (thinking_always_on=True)."""
+        caps = AnthropicProvider._get_capabilities("claude-fable-latest")
+        assert caps.thinking_always_on is True
+
+
+class TestThinkingAlwaysOnRequestBehavior:
+    """thinking_always_on=True: the provider never injects a thinking param."""
+
+    def test_fable5_no_thinking_param_with_reasoning_effort(self):
+        """claude-fable-5 + reasoning_effort='high' must NOT send thinking param.
+
+        Fable 5 has thinking always on — the API controls it implicitly.
+        Sending {type:disabled} (or any explicit thinking param) causes HTTP 400.
+        """
+        provider = _make_provider(default_model="claude-fable-5")
+        provider.client.messages.with_raw_response.create = AsyncMock(
+            return_value=_make_raw_mock()
+        )
+
+        request = ChatRequest(
+            messages=[Message(role="user", content="Hello")],
+            reasoning_effort="high",
+        )
+        asyncio.run(provider.complete(request))
+
+        params = _get_api_params(provider.client.messages.with_raw_response.create)
+        assert "thinking" not in params
 
 
 class TestGetCapabilitiesSonnet5:
