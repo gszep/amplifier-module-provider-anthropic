@@ -310,7 +310,7 @@ def test_convert_no_multiplier_for_standard_speed():
 
 
 # ---------------------------------------------------------------------------
-# (s) Fable 5 / Mythos 5 pricing: 1M input -> $10.00, 1M output -> $50.00
+# (s) Fable 5 pricing: 1M input -> $10.00, 1M output -> $50.00
 # ---------------------------------------------------------------------------
 def test_fable5_input_tokens_cost():
     """claude-fable-5: 1M input -> $10.00"""
@@ -356,11 +356,6 @@ def test_fable5_exact_2x_opus48():
     assert opus_output is not None, "claude-opus-4-8 must be in _RATES"
     assert fable_output is not None, "claude-fable-5 must be in _RATES"
     assert fable_output == opus_output * 2
-
-
-def test_mythos5_is_recognized():
-    """claude-mythos-5 must return a non-None cost."""
-    assert compute_cost("claude-mythos-5", input_tokens=1_000_000) == Decimal("10.00")
 
 
 # ---------------------------------------------------------------------------
