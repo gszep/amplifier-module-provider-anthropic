@@ -1,7 +1,7 @@
 [project]
-name = "amplifier-module-provider-claude"
+name = "amplifier-module-provider-anthropic"
 version = "1.0.0"
-description = "Reference provider module - Claude integration for Amplifier"
+description = "Anthropic provider for Amplifier with Claude Pro/Max OAuth"
 license = "MIT"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -9,12 +9,15 @@ authors = [
     { name = "Grisha Szep" },
 ]
 dependencies = [
-    "anthropic>=0.76.0",
-    "claude-agent-sdk",
+    "anthropic>=0.96.0",
 ]
 
+[project.scripts]
+amplifier-anthropic-login = "amplifier_module_provider_anthropic.login:main"
+amplifier-claude-login = "amplifier_module_provider_anthropic.login:main"
+
 [project.entry-points."amplifier.modules"]
-provider-claude = "amplifier_module_provider_claude:mount"
+provider-anthropic = "amplifier_module_provider_anthropic:mount"
 
 [build-system]
 requires = [
@@ -28,7 +31,7 @@ package = true
 
 [tool.hatch.build.targets.wheel]
 packages = [
-    "amplifier_module_provider_claude",
+    "amplifier_module_provider_anthropic",
 ]
 
 [tool.hatch.metadata]

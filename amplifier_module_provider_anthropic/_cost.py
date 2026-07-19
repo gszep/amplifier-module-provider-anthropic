@@ -5,7 +5,7 @@ Source: https://www.anthropic.com/pricing
 
 Usage
 -----
-    from amplifier_module_provider_claude._cost import compute_cost
+    from amplifier_module_provider_anthropic._cost import compute_cost
     from decimal import Decimal
 
     cost = compute_cost(

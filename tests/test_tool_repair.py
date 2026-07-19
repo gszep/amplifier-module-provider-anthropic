@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 from amplifier_core import ModuleCoordinator
 from amplifier_core.message_models import ChatRequest, Message, ToolCallBlock
 
-from amplifier_module_provider_claude import ClaudeProvider
+from amplifier_module_provider_anthropic import ClaudeProvider
 
 
 class FakeHooks:

@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 from amplifier_core.message_models import ChatRequest, ImageBlock, Message, TextBlock
 
-from amplifier_module_provider_claude import ClaudeProvider
+from amplifier_module_provider_anthropic import ClaudeProvider
 
 
 @pytest.fixture

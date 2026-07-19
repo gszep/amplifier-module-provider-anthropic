@@ -9,9 +9,6 @@
 ```bash
 # Install UV (Python package manager)
 curl -LsSf https://astral.sh/uv/install.sh | sh
-
-# Install Claude Code CLI
-curl -fsSL https://claude.ai/install.sh | bash
 ```
 
 ### 2. Install Amplifier with Claude Provider
@@ -38,12 +35,19 @@ See [Routing Matrix Integration](#routing-matrix-integration) below.
 
 </details>
 
-### 3. Configuration
+### 3. Authentication and Configuration
+
+Authenticate directly with Anthropic using the same OAuth/PKCE flow used by Pi:
 
 ```bash
+amplifier-claude-login
 amplifier init  # select [3] Claude Code
 ```
-> **Note**: If `ANTHROPIC_API_KEY` is set in `~/.amplifier/keys.env` API billing will be used.
+
+OAuth credentials are stored at `~/.amplifier/claude-auth.json` with mode `0600`
+and refreshed automatically. `ANTHROPIC_OAUTH_TOKEN` can provide an OAuth token
+without the credential file. If `ANTHROPIC_API_KEY` is set, API-key billing is
+used when no stored OAuth credential exists.
 
 ## Models
 
@@ -57,13 +61,29 @@ The CLI also accepts short aliases (`sonnet`, `opus`, `haiku`) for `default_mode
 
 ## How It Works
 
-This provider wraps the Claude Code CLI:
-- Tool definitions are injected via system prompt
-- Claude's built-in tools are disabled (`--tools ""`)
-- Amplifier's orchestrator handles all tool execution
-- Responses are parsed for `[tool]:` blocks
+This provider talks directly to Anthropic's Messages API:
 
-This gives Amplifier full control over the tool ecosystem while using Claude Code.
+- Claude Pro/Max authentication uses OAuth with PKCE and automatic token refresh.
+- Tool definitions are sent as native Anthropic `tools` objects.
+- Tool calls and results remain native `tool_use` and `tool_result` blocks.
+- Amplifier's orchestrator retains control of tool execution.
+- OAuth requests carry the Claude Code identity headers required by Anthropic.
+
+No tool definitions or calls are rendered into model-visible XML/text.
+
+### Claude Code header compatibility
+
+The OAuth request contract is centralized in
+`amplifier_module_provider_anthropic/auth.py`. The provider discovers the installed
+Claude Code version for its user-agent and has a fallback when the CLI is not
+installed. `tests/test_claude_header_parity.py` checks the observable OAuth
+contract against an installed Claude Code executable, while the long-running
+provider integration tests verify that Anthropic accepts the request.
+
+Claude Code does not expose final request headers and its OAuth traffic cannot be
+redirected to a plaintext recorder. A true byte-for-byte capture therefore
+requires a trusted TLS interception proxy. The parity test deliberately avoids
+installing a local CA or exposing OAuth bearer tokens.
 
 ## Routing Matrix Integration
 
@@ -83,11 +103,6 @@ routing:
 The routing hook only discovers matrices from its own bundle's cache directory,
 which is why `install.sh` copies the file there. If you reinstall Amplifier or
 reset the cache, re-run `install.sh` to restore it.
-
-## Documentation
-
-- **[Architecture](docs/ARCHITECTURE.md)** — Prompt structure, text-based tool calling, session caching
-- **[Feature Coverage](docs/FEATURE_COVERAGE.md)** — Comparison with the Anthropic API provider, known limitations
 
 ## Contributing
 

@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import secrets
+import subprocess
 import time
 from typing import Any
 from urllib.parse import parse_qs, urlencode, urlparse
@@ -28,6 +29,48 @@ SCOPES = (
     "org:create_api_key user:profile user:inference "
     "user:sessions:claude_code user:mcp_servers user:file_upload"
 )
+OAUTH_BETAS = (
+    "claude-code-20250219",
+    "oauth-2025-04-20",
+    "fine-grained-tool-streaming-2025-05-14",
+    "interleaved-thinking-2025-05-14",
+)
+
+
+def installed_claude_code_version() -> str:
+    """Use the installed CLI version in the identity header when available."""
+    configured = os.environ.get("AMPLIFIER_CLAUDE_CODE_VERSION")
+    if configured:
+        return configured
+    try:
+        result = subprocess.run(
+            ["claude", "--version"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
+        )
+        version = result.stdout.strip().split(" ", 1)[0]
+        if version and all(part.isdigit() for part in version.split(".")):
+            return version
+    except (OSError, subprocess.SubprocessError):
+        pass
+    # This is only an attribution header. Authentication does not depend on
+    # the installed CLI, so retain a known-compatible fallback.
+    return "2.1.75"
+
+
+def oauth_request_headers() -> dict[str, str]:
+    """Headers used by pi for Anthropic Claude Pro/Max OAuth requests."""
+    return {
+        "accept": "application/json",
+        "anthropic-dangerous-direct-browser-access": "true",
+        "anthropic-beta": ",".join(OAUTH_BETAS),
+        "user-agent": (
+            f"claude-cli/{installed_claude_code_version()} (external, cli)"
+        ),
+        "x-app": "cli",
+    }
 
 
 @dataclass(frozen=True)

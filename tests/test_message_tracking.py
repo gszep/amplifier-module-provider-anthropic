@@ -2,7 +2,7 @@
 
 from amplifier_core.message_models import Message, ToolCallBlock, ToolResultBlock
 
-from amplifier_module_provider_claude import ClaudeProvider, Session
+from amplifier_module_provider_anthropic import ClaudeProvider, Session
 
 
 def _make_provider() -> ClaudeProvider:

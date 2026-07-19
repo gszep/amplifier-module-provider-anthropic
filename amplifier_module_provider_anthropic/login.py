@@ -88,17 +88,30 @@ async def login() -> None:
     print(f"\nWaiting for the callback at {REDIRECT_URI}.")
     webbrowser.open(url)
 
-    manual = asyncio.create_task(
-        asyncio.to_thread(
-            input,
-            "If the browser is on another machine, paste the final redirect URL or authorization code here:\n> ",
-        )
-    )
-    callback_task = asyncio.ensure_future(callback)
+    manual: asyncio.Future[str] = loop.create_future()
+
+    def read_manual_input() -> None:
+        line = sys.stdin.readline()
+        if not manual.done():
+            manual.set_result(line)
+
+    has_stdin_reader = False
     try:
-        done, _ = await asyncio.wait(
-            {manual, callback_task}, return_when=asyncio.FIRST_COMPLETED
+        loop.add_reader(sys.stdin.fileno(), read_manual_input)
+        has_stdin_reader = True
+        print(
+            "If the browser is on another machine, paste the final redirect URL "
+            "or authorization code here, then press Enter:\n> ",
+            end="",
+            flush=True,
         )
+    except (AttributeError, NotImplementedError, OSError):
+        pass
+
+    callback_task = asyncio.ensure_future(callback)
+    waiters = {callback_task, manual} if has_stdin_reader else {callback_task}
+    try:
+        done, _ = await asyncio.wait(waiters, return_when=asyncio.FIRST_COMPLETED)
         if callback_task in done:
             code, state = callback_task.result()
         else:
@@ -116,6 +129,8 @@ async def login() -> None:
         await asyncio.to_thread(write_credentials, path, credentials)
         print(f"Anthropic OAuth credentials saved to {path}")
     finally:
+        if has_stdin_reader:
+            loop.remove_reader(sys.stdin.fileno())
         if server:
             server.close()
             await server.wait_closed()
