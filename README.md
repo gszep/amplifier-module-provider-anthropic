@@ -50,7 +50,10 @@ amplifier provider test anthropic
 `uvx` is intentional: `amplifier source add` installs the runtime module into
 Amplifier's module cache, but does not expose that module's console scripts on
 your shell `PATH`. `uvx --from ...` runs the login command directly from the
-fork without permanently installing a second Python tool environment.
+fork without permanently installing a second Python tool environment. The login
+entry point lives in the lightweight `amplifier_anthropic_oauth` package, so it
+does not import `amplifier_core` and does not require Amplifier to have been run
+or initialized first.
 
 To update a branch-based installation later:
 

@@ -60,7 +60,7 @@ from anthropic._exceptions import (
 )  # Not exported in public API as of SDK v0.96.0 (private import still works)
 
 from ._cost import compute_cost
-from .auth import (
+from amplifier_anthropic_oauth.auth import (
     AnthropicAuth,
     AnthropicAuthError,
     AnthropicAuthManager,
