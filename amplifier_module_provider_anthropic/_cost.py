@@ -163,6 +163,7 @@ def compute_cost(
     output_tokens: int = 0,
     cache_read_input_tokens: int = 0,
     cache_creation_input_tokens: int = 0,
+    speed: str | None = None,
 ) -> Decimal | None:
     """Return the USD cost for an Anthropic API call as a :class:`~decimal.Decimal`.
 
@@ -204,5 +205,11 @@ def compute_cost(
         cost += (
             Decimal(cache_creation_input_tokens) * rates["cache_write_per_m"] / _PER_M
         )
+
+    if speed == "fast" and any(
+        family in model
+        for family in ("claude-opus-4-6", "claude-opus-4-7", "claude-opus-4-8")
+    ):
+        cost *= 2
 
     return cost

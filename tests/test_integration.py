@@ -1,4 +1,4 @@
-"""Integration tests for provider-claude module."""
+"""Integration tests for provider-anthropic module."""
 
 import subprocess
 import tempfile
@@ -26,7 +26,7 @@ def test_provider_basic_completion():
         )
 
     print(
-        f"""\namplifier run --provider claude "what is 1+1? reply with just the number"\n{result.stdout}"""
+        f"""\namplifier run --provider anthropic "what is 1+1? reply with just the number"\n{result.stdout}"""
     )
     if result.stderr:
         print(f"{result.stderr}")
@@ -55,7 +55,7 @@ def test_provider_with_tools():
         )
 
     print(
-        f"""\namplifier run --provider claude "What is the current date and time?"\n{result.stdout}"""
+        f"""\namplifier run --provider anthropic "What is the current date and time?"\n{result.stdout}"""
     )
     if result.stderr:
         print(f"{result.stderr}")

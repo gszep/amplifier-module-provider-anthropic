@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 from amplifier_core.message_models import ChatRequest, ImageBlock, Message, TextBlock
 
-from amplifier_module_provider_anthropic import ClaudeProvider
+from amplifier_module_provider_anthropic import AnthropicProvider
 
 
 @pytest.fixture
@@ -20,8 +20,8 @@ def test_image_base64():
 
 @pytest.fixture
 def claude_provider():
-    """Create an ClaudeProvider instance for testing."""
-    return ClaudeProvider()
+    """Create an AnthropicProvider instance for testing."""
+    return AnthropicProvider()
 
 
 def test_image_block_conversion_to_anthropic_format(claude_provider, test_image_base64):
@@ -177,7 +177,7 @@ async def test_image_vision_integration(test_image_base64):
     """Integration test: Verify ImageBlock works."""
 
     # Create provider
-    provider = ClaudeProvider()
+    provider = AnthropicProvider()
 
     # Create request with image of Macbeth stage production
     request = ChatRequest(

@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 from amplifier_core import ModuleCoordinator
 from amplifier_core.message_models import ChatRequest, Message, ToolCallBlock
 
-from amplifier_module_provider_anthropic import ClaudeProvider
+from amplifier_module_provider_anthropic import AnthropicProvider
 
 
 class FakeHooks:
@@ -25,7 +25,7 @@ class FakeCoordinator:
 
 def test_tool_call_sequence_missing_tool_message_is_repaired():
     """Missing tool results should be repaired with synthetic results and emit event."""
-    provider = ClaudeProvider(config={"use_streaming": False})
+    provider = AnthropicProvider(config={"use_streaming": False})
     provider._complete_chat_request = AsyncMock(return_value=MagicMock())
     fake_coordinator = FakeCoordinator()
     provider.coordinator = cast(ModuleCoordinator, fake_coordinator)
@@ -56,14 +56,14 @@ def test_tool_call_sequence_missing_tool_message_is_repaired():
         if e[0] == "provider:tool_sequence_repaired"
     ]
     assert len(repair_events) == 1
-    assert repair_events[0][1]["provider"] == "claude"
+    assert repair_events[0][1]["provider"] == "anthropic"
     assert repair_events[0][1]["repair_count"] == 1
     assert repair_events[0][1]["repairs"][0]["tool_name"] == "do_something"
 
 
 def test_repaired_tool_ids_are_not_detected_again():
     """Repaired tool IDs should be tracked and not trigger re-detection."""
-    provider = ClaudeProvider(config={"use_streaming": False})
+    provider = AnthropicProvider(config={"use_streaming": False})
     provider._complete_chat_request = AsyncMock(return_value=MagicMock())
     fake_coordinator = FakeCoordinator()
     provider.coordinator = cast(ModuleCoordinator, fake_coordinator)
@@ -114,7 +114,7 @@ def test_repaired_tool_ids_are_not_detected_again():
 
 def test_multiple_missing_tool_results_all_tracked():
     """Multiple missing tool results should all be tracked."""
-    provider = ClaudeProvider(config={"use_streaming": False})
+    provider = AnthropicProvider(config={"use_streaming": False})
     provider._complete_chat_request = AsyncMock(return_value=MagicMock())
     fake_coordinator = FakeCoordinator()
     provider.coordinator = cast(ModuleCoordinator, fake_coordinator)
@@ -147,7 +147,7 @@ def test_multiple_missing_tool_results_all_tracked():
 
 def test_streaming_tool_call_sequence_missing_tool_message_is_repaired():
     """Missing tool results should be repaired with streaming API."""
-    provider = ClaudeProvider()
+    provider = AnthropicProvider()
     provider._complete_chat_request = AsyncMock(return_value=MagicMock())
     fake_coordinator = FakeCoordinator()
     provider.coordinator = cast(ModuleCoordinator, fake_coordinator)
@@ -179,14 +179,14 @@ def test_streaming_tool_call_sequence_missing_tool_message_is_repaired():
         if e[0] == "provider:tool_sequence_repaired"
     ]
     assert len(repair_events) == 1
-    assert repair_events[0][1]["provider"] == "claude"
+    assert repair_events[0][1]["provider"] == "anthropic"
     assert repair_events[0][1]["repair_count"] == 1
     assert repair_events[0][1]["repairs"][0]["tool_name"] == "do_something"
 
 
 def test_streaming_repaired_tool_ids_are_not_detected_again():
     """Repaired tool IDs should be tracked with streaming API."""
-    provider = ClaudeProvider()
+    provider = AnthropicProvider()
     provider._complete_chat_request = AsyncMock(return_value=MagicMock())
     fake_coordinator = FakeCoordinator()
     provider.coordinator = cast(ModuleCoordinator, fake_coordinator)
@@ -244,7 +244,7 @@ def test_streaming_repaired_tool_ids_are_not_detected_again():
 
 def test_streaming_multiple_missing_tool_results_all_tracked():
     """Multiple missing tool results should all be tracked with streaming API."""
-    provider = ClaudeProvider()
+    provider = AnthropicProvider()
     provider._complete_chat_request = AsyncMock(return_value=MagicMock())
     fake_coordinator = FakeCoordinator()
     provider.coordinator = cast(ModuleCoordinator, fake_coordinator)

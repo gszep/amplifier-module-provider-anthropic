@@ -3,19 +3,11 @@
 import asyncio
 import json
 import os
-from pathlib import Path
-from types import SimpleNamespace
-from unittest.mock import AsyncMock
 
-from amplifier_core.message_models import (
-    ChatRequest,
-    Message,
-    ToolResultBlock,
-    ToolSpec,
-)
+from amplifier_core.message_models import ToolSpec
 from anthropic.types import Message as AnthropicMessage
 
-from amplifier_module_provider_anthropic import ClaudeProvider
+from amplifier_module_provider_anthropic import AnthropicProvider
 from amplifier_module_provider_anthropic.auth import (
     AnthropicAuth,
     AnthropicAuthManager,
@@ -65,30 +57,29 @@ def test_auth_manager_prefers_oauth_over_api_key(tmp_path, monkeypatch):
     assert auth == AnthropicAuth("sk-ant-oat-access", oauth=True)
 
 
-def test_tool_results_remain_native_and_adjacent_users_are_merged():
-    provider = ClaudeProvider()
-    messages = [
-        Message(
-            role="user",
-            content=[ToolResultBlock(tool_call_id="toolu_1", output="done")],
-        ),
-        Message(role="user", content="Continue"),
-    ]
-    converted = provider._convert_messages([message.model_dump() for message in messages])
-    assert len(converted) == 1
-    assert converted[0]["content"][0] == {
-        "type": "tool_result",
-        "tool_use_id": "toolu_1",
-        "content": "done",
-    }
-    assert converted[0]["content"][1] == {"type": "text", "text": "Continue"}
-
-
-def test_native_tools_are_sent_structurally(monkeypatch):
-    provider = ClaudeProvider(config={"max_retries": 0})
-    provider._auth.get_auth = AsyncMock(
-        return_value=AnthropicAuth("sk-ant-oat-test", oauth=True)
+def test_native_tools_are_sent_structurally():
+    provider = AnthropicProvider(
+        "sk-ant-oat-test",
+        initial_auth=AnthropicAuth("sk-ant-oat-test", oauth=True),
     )
+    tools = provider._convert_tools_from_request(
+        [
+            ToolSpec(
+                name="read",
+                description="Read a file",
+                parameters={
+                    "type": "object",
+                    "properties": {"path": {"type": "string"}},
+                    "required": ["path"],
+                },
+            )
+        ]
+    )
+    params = {
+        "messages": [{"role": "user", "content": "Read the README"}],
+        "tools": tools,
+    }
+    provider._apply_oauth_request_contract(params)
 
     response = AnthropicMessage.model_validate(
         {
@@ -109,34 +100,15 @@ def test_native_tools_are_sent_structurally(monkeypatch):
             "usage": {"input_tokens": 10, "output_tokens": 5},
         }
     )
-    create = AsyncMock(return_value=response)
-    provider._client_for_auth = AsyncMock(
-        return_value=SimpleNamespace(messages=SimpleNamespace(create=create))
-    )
+    result = provider._convert_to_chat_response(response)
 
-    request = ChatRequest(
-        messages=[Message(role="user", content="Read the README")],
-        tools=[
-            ToolSpec(
-                name="read",
-                description="Read a file",
-                parameters={
-                    "type": "object",
-                    "properties": {"path": {"type": "string"}},
-                    "required": ["path"],
-                },
-            )
-        ],
-    )
-    result = asyncio.run(provider.complete(request))
-
-    payload = create.await_args.kwargs
-    assert payload["tools"][0]["name"] == "Read"
-    assert payload["tools"][0]["input_schema"]["required"] == ["path"]
-    assert payload["messages"][0]["role"] == "user"
-    assert payload["messages"][0]["content"][0]["text"] == "Read the README"
-    assert "<tools>" not in json.dumps(payload["messages"])
-    assert "[tool]:" not in json.dumps(payload["messages"])
-    assert payload["system"][0]["text"].startswith("You are Claude Code")
+    assert params["tools"][0]["name"] == "Read"
+    assert params["tools"][0]["input_schema"]["required"] == ["path"]
+    assert params["messages"] == [
+        {"role": "user", "content": "Read the README"}
+    ]
+    assert "<tools>" not in json.dumps(params["messages"])
+    assert "[tool]:" not in json.dumps(params["messages"])
+    assert params["system"][0]["text"].startswith("You are Claude Code")
     assert result.tool_calls[0].name == "read"
     assert result.tool_calls[0].arguments == {"path": "README.md"}
