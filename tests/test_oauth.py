@@ -57,6 +57,17 @@ def test_auth_manager_prefers_oauth_over_api_key(tmp_path, monkeypatch):
     assert auth == AnthropicAuth("sk-ant-oat-access", oauth=True)
 
 
+def test_api_key_config_is_optional_for_oauth_users():
+    provider = AnthropicProvider(
+        "sk-ant-oat-test",
+        initial_auth=AnthropicAuth("sk-ant-oat-test", oauth=True),
+    )
+    api_key_field = next(
+        field for field in provider.get_info().config_fields if field.id == "api_key"
+    )
+    assert api_key_field.required is False
+
+
 def test_oauth_client_uses_bearer_auth_and_identity_headers():
     provider = AnthropicProvider(
         "sk-ant-oat-test",
