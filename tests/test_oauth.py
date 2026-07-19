@@ -159,7 +159,8 @@ def test_api_key_config_is_optional_for_oauth_users():
     assert api_key_field.required is False
 
 
-def test_direct_provider_instance_discovers_stored_oauth(tmp_path):
+@pytest.mark.parametrize("api_key", [None, ""])
+def test_direct_provider_instance_discovers_stored_oauth(tmp_path, api_key):
     path = tmp_path / "auth.json"
     write_credentials(
         path,
@@ -170,7 +171,7 @@ def test_direct_provider_instance_discovers_stored_oauth(tmp_path):
             "expires": 9999999999999,
         },
     )
-    provider = AnthropicProvider(config={"auth_file": str(path)})
+    provider = AnthropicProvider(api_key=api_key, config={"auth_file": str(path)})
     asyncio.run(provider._refresh_auth())
     assert provider._auth_state == AnthropicAuth(
         "sk-ant-oat-discovered", oauth=True

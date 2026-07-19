@@ -526,6 +526,10 @@ class AnthropicProvider:
             config: Additional configuration
             coordinator: Module coordinator for event emission
         """
+        # Amplifier's configuration-time loader passes an empty string when an
+        # optional API-key field is left blank. Treat it as absent so stored
+        # OAuth credentials remain discoverable during model listing/testing.
+        api_key = api_key or None
         self._api_key = api_key
         self.config = config or {}
         auth_path = self.config.get("auth_file")
