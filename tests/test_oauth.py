@@ -21,6 +21,7 @@ from amplifier_anthropic_oauth.auth import (
     OAUTH_BETAS,
     oauth_request_headers,
     read_credentials,
+    refresh_oauth_credentials,
     write_credentials,
 )
 
@@ -68,6 +69,31 @@ def test_token_exchange_uses_claude_identity_headers(monkeypatch):
     assert headers["X-app"] == "cli"
 
 
+def test_refresh_uses_oauth_endpoint_and_scopes(monkeypatch):
+    captured = {}
+
+    def fake_post_json(url, body):
+        captured["url"] = url
+        captured["body"] = body
+        return {
+            "access_token": "new-access",
+            "refresh_token": "new-refresh",
+            "expires_in": 3600,
+        }
+
+    monkeypatch.setattr(auth_module, "_post_json", fake_post_json)
+    refreshed = refresh_oauth_credentials({"refresh": "old-refresh"})
+    assert captured["url"] == auth_module.TOKEN_URL
+    assert captured["body"] == {
+        "grant_type": "refresh_token",
+        "client_id": auth_module.CLIENT_ID,
+        "refresh_token": "old-refresh",
+        "scope": auth_module.SCOPES,
+    }
+    assert refreshed["access"] == "new-access"
+    assert refreshed["refresh"] == "new-refresh"
+
+
 def test_token_exchange_error_includes_response_body(monkeypatch):
     def fake_urlopen(request, timeout):
         raise HTTPError(
@@ -87,7 +113,7 @@ def test_oauth_headers_have_claude_code_identity(monkeypatch):
     monkeypatch.setenv("AMPLIFIER_CLAUDE_CODE_VERSION", "9.8.7")
     headers = oauth_request_headers()
     assert headers["x-app"] == "cli"
-    assert headers["user-agent"] == "claude-cli/9.8.7 (external, cli)"
+    assert headers["User-Agent"] == "claude-cli/9.8.7 (external, cli)"
     assert set(headers["anthropic-beta"].split(",")) == set(OAUTH_BETAS)
     assert headers["anthropic-dangerous-direct-browser-access"] == "true"
 

@@ -64,10 +64,12 @@ def installed_claude_code_version() -> str:
 def oauth_request_headers() -> dict[str, str]:
     """Headers used by pi for Anthropic Claude Pro/Max OAuth requests."""
     return {
-        "accept": "application/json",
+        "Accept": "application/json",
         "anthropic-dangerous-direct-browser-access": "true",
         "anthropic-beta": ",".join(OAUTH_BETAS),
-        "user-agent": (
+        # Match the SDK's canonical key casing so this replaces, rather than
+        # appends to, its default AsyncAnthropic/Python user-agent.
+        "User-Agent": (
             f"claude-cli/{installed_claude_code_version()} (external, cli)"
         ),
         "x-app": "cli",
@@ -153,7 +155,7 @@ def _post_json(url: str, body: dict[str, Any]) -> dict[str, Any]:
         headers={
             "Content-Type": "application/json",
             "Accept": "application/json",
-            "User-Agent": identity_headers["user-agent"],
+            "User-Agent": identity_headers["User-Agent"],
             "anthropic-beta": "oauth-2025-04-20",
             "x-app": identity_headers["x-app"],
         },
