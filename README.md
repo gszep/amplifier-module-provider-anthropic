@@ -1,4 +1,4 @@
-# Amplifier Anthropic Provider Module — Claude Pro/Max OAuth Fork
+# Amplifier Anthropic Provider Module
 
 This is a drop-in fork of
 [`microsoft/amplifier-module-provider-anthropic`](https://github.com/microsoft/amplifier-module-provider-anthropic).
