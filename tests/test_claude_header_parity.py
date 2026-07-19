@@ -41,7 +41,7 @@ def test_installed_claude_code_oauth_header_contract():
         check=True,
     ).stdout
     assert re.search(rf"\b{re.escape(version)}\b", reported)
-    expected_user_agent = f"claude-cli/{version} (external, cli)"
+    expected_user_agent = f"claude-cli/{version} (external, sdk-cli)"
     assert headers["User-Agent"] == expected_user_agent
     assert b"claude-cli/" in binary
     assert b"(external, " in binary

@@ -30,11 +30,11 @@ SCOPES = (
     "org:create_api_key user:profile user:inference "
     "user:sessions:claude_code user:mcp_servers user:file_upload"
 )
+# Stable OAuth identity betas. Feature-specific betas (thinking, context,
+# tools, caching) are selected by the upstream provider per request.
 OAUTH_BETAS = (
     "claude-code-20250219",
     "oauth-2025-04-20",
-    "fine-grained-tool-streaming-2025-05-14",
-    "interleaved-thinking-2025-05-14",
 )
 
 
@@ -70,7 +70,7 @@ def oauth_request_headers() -> dict[str, str]:
         # Match the SDK's canonical key casing so this replaces, rather than
         # appends to, its default AsyncAnthropic/Python user-agent.
         "User-Agent": (
-            f"claude-cli/{installed_claude_code_version()} (external, cli)"
+            f"claude-cli/{installed_claude_code_version()} (external, sdk-cli)"
         ),
         "x-app": "cli",
     }
