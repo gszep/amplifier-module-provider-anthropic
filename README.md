@@ -81,6 +81,30 @@ text. The request contract is centralized in
 `amplifier_module_provider_anthropic/auth.py` and checked against an installed
 Claude Code executable by `tests/test_claude_header_parity.py`.
 
+### OAuth test coverage
+
+The automated suite includes transport-level assertions over the final HTTP
+requests emitted by the Anthropic SDK for both `/v1/models` and `/v1/messages`.
+It verifies bearer auth, absence of `x-api-key`, Claude Code user-agent and
+`x-app`, and the complete required beta-header set. Token exchange/refresh
+request construction is tested separately, including its OAuth identity
+headers and error bodies.
+
+An opt-in live test uses the stored OAuth credential to list models and force a
+native tool call through the Messages API:
+
+```bash
+AMPLIFIER_ANTHROPIC_LIVE_TEST=1 \
+  uv run pytest tests/test_oauth_transport.py -m live_oauth
+```
+
+`tests/test_claude_header_parity.py` checks the client ID, OAuth endpoints,
+betas, and user-agent version embedded in the installed Claude Code executable.
+This is a contract/drift test, not a byte-for-byte capture of `claude -p` HTTPS
+traffic. Exact capture would require a trusted TLS interception proxy and would
+expose a live bearer token; it is deliberately not part of the normal test
+suite.
+
 Claude model integration for Amplifier via Anthropic API.
 
 ## Prerequisites

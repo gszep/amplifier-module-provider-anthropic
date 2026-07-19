@@ -41,6 +41,9 @@ allow-direct-references = true
 testpaths = ["tests"]
 addopts = "--import-mode=importlib"
 asyncio_mode = "strict"
+markers = [
+    "live_oauth: opt-in tests that call Anthropic with stored OAuth credentials",
+]
 
 [dependency-groups]
 dev = [
