@@ -71,3 +71,5 @@ next-steps.md
 
 # Working folders
 ai_working/tmp
+# Chi local state and sensitive artifacts (runtime state lives under ~/.chi)
+.chi/
