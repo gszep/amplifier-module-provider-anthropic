@@ -902,6 +902,7 @@ class AnthropicProvider:
         Returns:
             List of ModelInfo for available Claude models.
         """
+        await self._refresh_auth()
         response = await self.client.models.list()
         api_models = list(response.data)
 

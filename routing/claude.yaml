@@ -1,9 +1,9 @@
 # Routing Matrix: claude
-# Routes all roles through the Claude Code CLI provider.
-# Requires: amplifier-module-provider-claude mounted as "claude".
+# Routes all roles through the OAuth-enabled Anthropic provider.
+# Requires this fork mounted as the drop-in "anthropic" provider.
 
 name: claude
-description: "Routes all roles through the Claude Code CLI provider."
+description: "Routes all roles through the Anthropic provider."
 updated: "2026-03-02"
 
 roles:

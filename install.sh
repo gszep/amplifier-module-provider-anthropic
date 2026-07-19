@@ -1,26 +1,18 @@
-cd ~/.amplifier
+#!/usr/bin/env bash
+set -euo pipefail
 
-rm -rf bundle-registry.yaml cache registry.json settings.yaml keys.env routing
-cd ~
+SOURCE="git+https://github.com/gszep/amplifier-module-provider-claude@main"
 
-deactivate 2>/dev/null || true
-uv cache clean
-uv tool uninstall amplifier
-
-source ~/.bashrc
-
-uv tool install git+https://github.com/microsoft/amplifier --with pytest-asyncio
-amplifier module add provider-claude --source git+https://github.com/gszep/amplifier-module-provider-claude@main
-
-amplifier update -y
-amplifier init
-
-ROUTING_CACHE=$(find ~/.amplifier/cache -maxdepth 1 -name 'amplifier-bundle-routing-matrix-*' -type d 2>/dev/null | head -1)
-PROVIDER_CACHE=$(find ~/.amplifier/cache -maxdepth 1 -name 'amplifier-module-provider-claude-*' -type d 2>/dev/null | head -1)
-if [ -n "$ROUTING_CACHE" ] && [ -n "$PROVIDER_CACHE" ] && [ -f "$PROVIDER_CACHE/routing/claude.yaml" ]; then
-    cp "$PROVIDER_CACHE/routing/claude.yaml" "$ROUTING_CACHE/routing/claude.yaml"
-    echo "Installed claude routing matrix to $ROUTING_CACHE/routing/claude.yaml"
-else
-    echo "Warning: Could not install claude routing matrix (cache dirs not found)"
+if ! command -v uv >/dev/null 2>&1; then
+  echo "uv is required: https://docs.astral.sh/uv/" >&2
+  exit 1
 fi
 
+if ! command -v amplifier >/dev/null 2>&1; then
+  uv tool install git+https://github.com/microsoft/amplifier
+fi
+
+amplifier module add provider-anthropic --source "$SOURCE"
+
+echo "Installed the OAuth-enabled provider as the drop-in 'anthropic' provider."
+echo "Run amplifier-anthropic-login to authenticate a Claude Pro/Max account."

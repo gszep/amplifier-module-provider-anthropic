@@ -1,6 +1,6 @@
 """Anthropic pricing rates and cost computation.
 
-Verification date: 2026-05-06
+Verification date: 2026-06-10
 Source: https://www.anthropic.com/pricing
 
 Usage
@@ -59,6 +59,19 @@ _RATES: dict[str, dict[str, Decimal]] = {
         "cache_read_per_m": Decimal("0.30"),
         "cache_write_per_m": Decimal("3.75"),
     },
+    # Claude Sonnet 5 (launched 2026-06-30; anthropic.com/news/claude-sonnet-5).
+    # Standard rates $3 / $15 (same as the Sonnet 4.x tier). NOTE: an
+    # introductory discount of $2 input / $10 output applies through
+    # 2026-08-31 only; we deliberately encode the durable STANDARD rates here
+    # (no time-windowed pricing logic anywhere in this table). The updated
+    # Sonnet 5 tokenizer maps the same text to ~1.0-1.35x more tokens, which
+    # raises effective per-request cost even at identical rates.
+    "claude-sonnet-5": {
+        "input_per_m": Decimal("3.00"),
+        "output_per_m": Decimal("15.00"),
+        "cache_read_per_m": Decimal("0.30"),
+        "cache_write_per_m": Decimal("3.75"),
+    },
     # ------------------------------------------------------------------
     # Claude Opus 4.5 / 4.6 / 4.7 family  ($5 / $25 / $0.50 / $6.25)
     # Source: anthropic.com/news/claude-opus-4-7 (verified 2026-05-07)
@@ -102,6 +115,28 @@ _RATES: dict[str, dict[str, Decimal]] = {
         "output_per_m": Decimal("25.00"),
         "cache_read_per_m": Decimal("0.50"),
         "cache_write_per_m": Decimal("6.25"),
+    },
+    # ------------------------------------------------------------------
+    # Claude Opus 4.8  ($5 / $25 / $0.50 / $6.25)
+    # ------------------------------------------------------------------
+    "claude-opus-4-8": {
+        "input_per_m": Decimal("5.00"),
+        "output_per_m": Decimal("25.00"),
+        "cache_read_per_m": Decimal("0.50"),
+        "cache_write_per_m": Decimal("6.25"),
+    },
+    # ------------------------------------------------------------------
+    # Claude Fable 5  ($10 / $50 / $1.00 / $12.50)
+    # Exactly 2x Opus 4.8 on every rate.
+    # NOTE: A 1-hour cache write tier exists at $20.00/MTok but Anthropic's
+    # usage object returns a single cache_creation_input_tokens count and
+    # does not distinguish TTLs — track the 5-minute rate ($12.50) here.
+    # ------------------------------------------------------------------
+    "claude-fable-5": {
+        "input_per_m": Decimal("10.00"),
+        "output_per_m": Decimal("50.00"),
+        "cache_read_per_m": Decimal("1.00"),
+        "cache_write_per_m": Decimal("12.50"),
     },
     # ------------------------------------------------------------------
     # Claude Haiku 3.5  ($0.80 / $4.00 / $0.08 / $1.00)
@@ -150,6 +185,17 @@ _RATES: dict[str, dict[str, Decimal]] = {
     },
 }
 
+# Models for which the 2x fast-mode multiplier applies when speed=='fast'.
+# The 2x cost multiplier is applied ONLY when BOTH the response confirms
+# speed=='fast' AND the model is listed here — this prevents a silent API
+# fallback to standard speed (or misconfigured caller) from inflating
+# tracked cost.
+_FAST_ELIGIBLE_MODELS: set[str] = {
+    "claude-opus-4-6",
+    "claude-opus-4-7",
+    "claude-opus-4-8",
+}
+
 
 # ---------------------------------------------------------------------------
 # Public API
@@ -182,6 +228,9 @@ def compute_cost(
     cache_creation_input_tokens:
         Tokens written to the prompt cache (slightly more expensive than
         fresh input).
+    speed:
+        When ``'fast'`` AND *model* is in :data:`_FAST_ELIGIBLE_MODELS` a 2x
+        multiplier is applied; any other value leaves cost unchanged.
 
     Returns
     -------
@@ -206,10 +255,7 @@ def compute_cost(
             Decimal(cache_creation_input_tokens) * rates["cache_write_per_m"] / _PER_M
         )
 
-    if speed == "fast" and any(
-        family in model
-        for family in ("claude-opus-4-6", "claude-opus-4-7", "claude-opus-4-8")
-    ):
+    if speed == "fast" and model in _FAST_ELIGIBLE_MODELS:
         cost *= 2
 
     return cost
