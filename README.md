@@ -26,11 +26,11 @@ FORK=git+https://github.com/gszep/amplifier-module-provider-anthropic@main
 
 amplifier source add provider-anthropic "$FORK" --global --module
 uvx --from "$FORK" amplifier-anthropic-login
-amplifier module update provider-anthropic
 ```
 
-If Anthropic is not configured yet, add it and leave the optional API-key prompt
-blank:
+No module cache exists on a fresh installation; this is expected. Amplifier
+will download the fork on first provider use. If Anthropic is not configured
+yet, add it and leave the optional API-key prompt blank:
 
 ```bash
 amplifier provider add anthropic
