@@ -78,8 +78,8 @@ system identity, and canonical Claude Code casing for matching built-in tool
 names. Tools otherwise follow the official provider's native `tools`,
 `tool_use`, and `tool_result` path; nothing is serialized into model-visible
 text. The request contract is centralized in
-`amplifier_module_provider_anthropic/auth.py` and checked against an installed
-Claude Code executable by `tests/test_claude_header_parity.py`.
+`amplifier_anthropic_oauth/auth.py` and checked against an installed Claude Code
+executable by `tests/test_claude_header_parity.py`.
 
 ### OAuth test coverage
 
@@ -90,20 +90,29 @@ It verifies bearer auth, absence of `x-api-key`, Claude Code user-agent and
 request construction is tested separately, including its OAuth identity
 headers and error bodies.
 
-An opt-in live test uses the stored OAuth credential to list models and force a
-native tool call through the Messages API:
+Two pytest-marked local tests are excluded from normal and CI runs. The live
+OAuth test uses the stored provider credential to list models and force a native
+tool call through the Messages API:
 
 ```bash
-AMPLIFIER_ANTHROPIC_LIVE_TEST=1 \
-  uv run pytest tests/test_oauth_transport.py -m live_oauth
+uv run pytest -m live_oauth
 ```
 
-`tests/test_claude_header_parity.py` checks the client ID, OAuth endpoints,
-betas, and user-agent version embedded in the installed Claude Code executable.
-This is a contract/drift test, not a byte-for-byte capture of `claude -p` HTTPS
-traffic. Exact capture would require a trusted TLS interception proxy and would
-expose a live bearer token; it is deliberately not part of the normal test
-suite.
+The local header-capture test reuses the machine's installed `claude` executable
+and `~/.claude/.credentials.json`. It starts a minimal in-process CONNECT proxy,
+generates a temporary CA and leaf certificate, passes that CA to Claude through
+`NODE_EXTRA_CA_CERTS`, captures one `claude -p` Messages request, immediately
+redacts its bearer token, compares stable OAuth headers, and tears everything
+down:
+
+```bash
+uv run pytest -m local_header_capture
+```
+
+No container, persistent CA installation, or third-party proxy is required.
+`tests/test_claude_header_parity.py` separately checks the client ID, OAuth
+endpoints, betas, and user-agent version embedded in the installed Claude Code
+executable.
 
 Claude model integration for Amplifier via Anthropic API.
 

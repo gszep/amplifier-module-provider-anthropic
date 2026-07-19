@@ -64,7 +64,7 @@ def test_token_exchange_uses_claude_identity_headers(monkeypatch):
         "ok": True
     }
     headers = dict(captured["request"].header_items())
-    assert headers["User-agent"] == "claude-cli/9.8.7 (external, cli)"
+    assert headers["User-agent"] == "claude-cli/9.8.7 (external, sdk-cli)"
     assert headers["Anthropic-beta"] == "oauth-2025-04-20"
     assert headers["X-app"] == "cli"
 
@@ -113,7 +113,7 @@ def test_oauth_headers_have_claude_code_identity(monkeypatch):
     monkeypatch.setenv("AMPLIFIER_CLAUDE_CODE_VERSION", "9.8.7")
     headers = oauth_request_headers()
     assert headers["x-app"] == "cli"
-    assert headers["User-Agent"] == "claude-cli/9.8.7 (external, cli)"
+    assert headers["User-Agent"] == "claude-cli/9.8.7 (external, sdk-cli)"
     assert set(headers["anthropic-beta"].split(",")) == set(OAUTH_BETAS)
     assert headers["anthropic-dangerous-direct-browser-access"] == "true"
 

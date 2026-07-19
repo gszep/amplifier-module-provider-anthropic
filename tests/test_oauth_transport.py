@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-import os
-from pathlib import Path
-
 from amplifier_core.message_models import ChatRequest, Message, ToolSpec
 from anthropic import AsyncAnthropic
 import httpx
@@ -115,12 +112,7 @@ async def test_models_and_messages_emit_oauth_headers(monkeypatch):
 @pytest.mark.asyncio
 async def test_live_oauth_models_and_native_tool_call():
     """Opt-in smoke test against Anthropic using the stored OAuth credential."""
-    if os.environ.get("AMPLIFIER_ANTHROPIC_LIVE_TEST") != "1":
-        pytest.skip("set AMPLIFIER_ANTHROPIC_LIVE_TEST=1 to run live OAuth tests")
-
-    auth_file = Path(
-        os.environ.get("AMPLIFIER_ANTHROPIC_AUTH_FILE", default_auth_path())
-    ).expanduser()
+    auth_file = default_auth_path()
     provider = AnthropicProvider(
         config={
             "auth_file": str(auth_file),
