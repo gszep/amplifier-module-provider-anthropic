@@ -5,17 +5,65 @@ This is a drop-in fork of
 It keeps the official provider implementation and adds Claude Pro/Max OAuth
 using the same direct Anthropic Messages API approach as Pi.
 
-Install this branch in place of the official provider:
+## Installation
+
+Amplifier supports Git source overrides for runtime modules. Install Amplifier
+first if necessary:
 
 ```bash
-amplifier module add provider-anthropic \
-  --source git+https://github.com/gszep/amplifier-module-provider-anthropic@main
-amplifier-anthropic-login
+# Install uv (macOS/Linux/WSL)
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Install Amplifier
+uv tool install git+https://github.com/microsoft/amplifier
 ```
 
-The provider remains registered as `anthropic`, so existing bundles and routing
-configuration continue to work unchanged. `amplifier-claude-login` is retained
-as an alias.
+Then override the official Anthropic module globally and run this fork's OAuth
+login as a one-off `uvx` command:
+
+```bash
+FORK=git+https://github.com/gszep/amplifier-module-provider-anthropic@main
+
+amplifier source add provider-anthropic "$FORK" --global --module
+uvx --from "$FORK" amplifier-anthropic-login
+amplifier module update provider-anthropic
+```
+
+If Anthropic is not configured yet, add it and leave the optional API-key prompt
+blank:
+
+```bash
+amplifier provider add anthropic
+```
+
+Existing Anthropic configurations need no changes. The provider remains
+registered as `anthropic`, so existing bundles, routing, and model settings
+continue to work unchanged.
+
+Verify the installation with:
+
+```bash
+amplifier source show provider-anthropic
+amplifier provider test anthropic
+```
+
+`uvx` is intentional: `amplifier source add` installs the runtime module into
+Amplifier's module cache, but does not expose that module's console scripts on
+your shell `PATH`. `uvx --from ...` runs the login command directly from the
+fork without permanently installing a second Python tool environment.
+
+To update a branch-based installation later:
+
+```bash
+amplifier module update provider-anthropic
+```
+
+To return to Microsoft's official provider:
+
+```bash
+amplifier source remove provider-anthropic --global
+amplifier module update provider-anthropic
+```
 
 OAuth credentials are stored in `~/.amplifier/anthropic-auth.json` with mode
 `0600` and refreshed automatically. Authentication precedence is

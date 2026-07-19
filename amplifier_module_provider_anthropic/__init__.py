@@ -776,10 +776,11 @@ class AnthropicProvider:
             config_fields=[
                 ConfigField(
                     id="api_key",
-                    display_name="API Key",
+                    display_name="API Key (optional with Claude Pro/Max OAuth)",
                     field_type="secret",
-                    prompt="Enter your Anthropic API key",
+                    prompt="Enter your Anthropic API key, or leave blank after OAuth login",
                     env_var="ANTHROPIC_API_KEY",
+                    required=False,
                 ),
                 ConfigField(
                     id="base_url",
