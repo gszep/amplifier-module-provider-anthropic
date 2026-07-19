@@ -6,18 +6,12 @@ import asyncio
 
 import json
 import logging
-import os
 from pathlib import Path
 import re
-import shutil
-import tempfile
 import time
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-import claude_agent_sdk  # type: ignore
-import claude_agent_sdk._internal.client as _sdk_internal_client  # type: ignore
-import claude_agent_sdk._internal.message_parser as _sdk_message_parser  # type: ignore
 from amplifier_core import (  # type: ignore
     ModelInfo,
     ModuleCoordinator,
@@ -88,9 +82,7 @@ from anthropic.types.parsed_message import (  # type: ignore
     ParsedTextBlock,
 )
 from anthropic.types.usage import Usage as AnthropicUsage  # type: ignore
-from claude_agent_sdk import ClaudeSDKClient  # type: ignore
-from claude_agent_sdk.types import ClaudeAgentOptions  # type: ignore
-from pydantic import ValidationError
+from .auth import AnthropicAuth, AnthropicAuthManager
 
 logger = logging.getLogger(__name__)
 
@@ -107,33 +99,13 @@ async def retry_with_backoff(
     return await operation()
 
 
-# SDK patch: tolerate unknown message types (e.g. "rate_limit_event") from CLI v2.1.42+.
-# Tracking: https://github.com/anthropics/claude-agent-sdk-python/issues/583
-# Remove once claude-agent-sdk ships the fix (PR #589).
-from claude_agent_sdk._errors import MessageParseError as _MessageParseError  # type: ignore
-
-_original_parse_message = _sdk_message_parser.parse_message
-
-
-def _tolerant_parse_message(data: dict) -> claude_agent_sdk.types.Message:
-    try:
-        return _original_parse_message(data)
-    except _MessageParseError as exc:
-        if "Unknown message type" in str(exc):
-            msg_type = data.get("type", "?")
-            logger.info(
-                "[PROVIDER] Skipping unrecognized SDK message type: %s", msg_type
-            )
-            return claude_agent_sdk.types.StreamEvent(
-                uuid=data.get("uuid", ""),
-                session_id=data.get("session_id", ""),
-                event=data,
-            )
-        raise  # re-raise genuine parse errors (malformed data, missing fields)
-
-
-_sdk_message_parser.parse_message = _tolerant_parse_message
-_sdk_internal_client.parse_message = _tolerant_parse_message
+_CLAUDE_CODE_VERSION = "2.1.75"
+_OAUTH_BETAS = (
+    "claude-code-20250219",
+    "oauth-2025-04-20",
+    "fine-grained-tool-streaming-2025-05-14",
+    "interleaved-thinking-2025-05-14",
+)
 SESSION_TAG = "[session]:"
 SESSION = SESSION_TAG + """{"id": null}"""
 
@@ -216,37 +188,6 @@ async def mount(coordinator: ModuleCoordinator, config: dict[str, Any] | None = 
     """Mount the Claude provider."""
     config = config or {}
 
-    cli_path = shutil.which("claude")
-    if not cli_path:
-        logger.warning(
-            "Claude Code CLI not found. Install with: "
-            "curl -fsSL https://claude.ai/install.sh | bash"
-        )
-        return None
-
-    # Warn if Claude CLI context compaction is not disabled globally.
-    # Compaction strips the <tools> block, causing tool-call hallucinations.
-    claude_json = Path.home() / ".claude.json"
-    try:
-        if claude_json.exists():
-            claude_cfg = json.loads(claude_json.read_text())
-            if claude_cfg.get("autoCompactEnabled") is not False:
-                logger.warning(
-                    "[PROVIDER] Claude CLI autoCompactEnabled is not disabled "
-                    "in %s. Context compaction can strip tool definitions and "
-                    "cause tool-call failures. Set '\"autoCompactEnabled\": false' "
-                    "in %s to prevent this.",
-                    claude_json,
-                    claude_json,
-                )
-        else:
-            logger.info(
-                "[PROVIDER] %s not found — cannot verify autoCompactEnabled setting.",
-                claude_json,
-            )
-    except Exception as exc:
-        logger.debug("[PROVIDER] Failed to read %s: %s", claude_json, exc)
-
     provider = ClaudeProvider(config=config, coordinator=coordinator)
     await coordinator.mount("providers", provider, name="claude")
     logger.info("Mounted ClaudeProvider")
@@ -298,10 +239,14 @@ class ClaudeProvider:
 
         self._repaired_tool_ids: set[str] = set()
         self._available_tool_names: set[str] = set()
-        self._last_tools_text: str = ""
-        self._session: Session = Session()
-        self._messages_sent: int = 0
+        self._session: Session = Session()  # Reads legacy CLI session markers.
         self._client: AsyncAnthropic | None = None
+        self._client_auth: AnthropicAuth | None = None
+        auth_path = self.config.get("auth_file")
+        self._auth = AnthropicAuthManager(
+            path=Path(auth_path).expanduser() if auth_path else None,
+            api_key=self.config.get("api_key"),
+        )
 
         self._retry_config = RetryConfig(
             max_retries=self.config.get("max_retries", 5),
@@ -313,10 +258,29 @@ class ClaudeProvider:
             "overloaded_delay_multiplier", 10.0
         )
 
-    @property
-    def client(self) -> AsyncAnthropic:
-        if self._client is None:
-            self._client = AsyncAnthropic(max_retries=0)
+    async def _client_for_auth(self, auth: AnthropicAuth) -> AsyncAnthropic:
+        """Return a client configured for API-key or Claude subscription OAuth."""
+        if self._client is not None and self._client_auth == auth:
+            return self._client
+        if self._client is not None:
+            await self._client.close()
+
+        if auth.oauth:
+            self._client = AsyncAnthropic(
+                api_key=None,
+                auth_token=auth.token,
+                max_retries=0,
+                default_headers={
+                    "accept": "application/json",
+                    "anthropic-dangerous-direct-browser-access": "true",
+                    "anthropic-beta": ",".join(_OAUTH_BETAS),
+                    "user-agent": f"claude-cli/{_CLAUDE_CODE_VERSION}",
+                    "x-app": "cli",
+                },
+            )
+        else:
+            self._client = AsyncAnthropic(api_key=auth.token, max_retries=0)
+        self._client_auth = auth
         return self._client
 
     def get_info(self) -> ProviderInfo:
@@ -575,15 +539,7 @@ class ClaudeProvider:
                     },
                 )
 
-        response = await self._complete_chat_request(request, **kwargs)
-
-        # Handle provider-internal list_tools calls before the orchestrator sees them.
-        if response.tool_calls and any(
-            tc.name == "list_tools" for tc in response.tool_calls
-        ):
-            response = await self._fulfill_list_tools(request, response, **kwargs)
-
-        return response
+        return await self._complete_chat_request(request, **kwargs)
 
     async def _fulfill_list_tools(
         self,
@@ -693,9 +649,8 @@ class ClaudeProvider:
         self, request: ChatRequest, **kwargs
     ) -> ChatResponse:
 
-        self._set_session_from_request(request)
-        request.messages = self._get_recent_messages(request.messages)
-
+        # The Messages API is stateless: replay the structured conversation on
+        # every request. Legacy CLI session markers are ignored by conversion.
         logger.debug(
             f"Received ChatRequest with {len(request.messages)} messages (raw={self.raw})"
         )
@@ -755,25 +710,6 @@ class ClaudeProvider:
         )
         if request.tools:
             tools = self._convert_tools_from_request(request.tools)
-
-            # Store definitions for list_tools retrieval (before injecting list_tools itself)
-            self._last_tools_text = self._format_tools_listing(tools)
-
-            # Inject provider-internal list_tools so the model can recover
-            # tool definitions after CLI-side context compaction.
-            tools.append(
-                {
-                    "name": "list_tools",
-                    "description": (
-                        "Returns the full definitions of all available tools. "
-                        "Call this if tool definitions are no longer visible "
-                        "after context compaction."
-                    ),
-                    "input_schema": {"type": "object", "properties": {}},
-                }
-            )
-            self._available_tool_names.add("list_tools")
-
             params["tools"] = self._apply_tool_cache_control(tools)
             if tool_choice := kwargs.get("tool_choice"):
                 params["tool_choice"] = tool_choice
@@ -856,130 +792,57 @@ class ClaudeProvider:
 
         start_time = time.time()
         model = params["model"]
+        auth = await self._auth.get_auth()
+        client = await self._client_for_auth(auth)
+
+        if auth.oauth:
+            identity = {
+                "type": "text",
+                "text": "You are Claude Code, Anthropic's official CLI for Claude.",
+            }
+            if self.enable_prompt_caching:
+                identity["cache_control"] = {"type": "ephemeral"}
+            params["system"] = [identity, *(params.get("system") or [])]
 
         async def _do_complete() -> ParsedMessage:
-            _client_ref: ClaudeSDKClient | None = None
-
-            # On a fresh CLI session, deliver the system prompt via a temp
-            # file passed to `--system-prompt-file` (through extra_args).
-            # This sidesteps two ceilings the in-prompt path would hit:
-            #   1. The OS argv `ARG_MAX` (~125 KB on Linux) that caps
-            #      inline `--system-prompt` strings.
-            #   2. The CLI's internal text-prompt length check that
-            #      previously surfaced as "Prompt is too long" when the
-            #      first-turn user prompt held system+tools as XML text.
-            # On resume turns the CLI already has the system loaded; keep
-            # the existing `system_prompt="---"` placeholder for parity
-            # with the prior behavior.
-            #
-            # Compatibility note: the CLI rejects the combination of a
-            # NON-EMPTY `--system-prompt` with `--system-prompt-file`. The
-            # SDK always emits a `--system-prompt` arg, so we pass
-            # `system_prompt=None` (which renders as `--system-prompt ""`)
-            # — empty is accepted alongside `--system-prompt-file`.
-            sys_file_path: str | None = None
-            if not self._session.id and system_blocks:
-                fd, sys_file_path = tempfile.mkstemp(
-                    prefix="amplifier_sys_", suffix=".md"
-                )
-                try:
-                    with os.fdopen(fd, "w", encoding="utf-8") as f:
-                        f.write(system_blocks[0]["text"])
-                except Exception:
-                    # If write fails, clean up immediately and surface
-                    try:
-                        os.unlink(sys_file_path)
-                    except OSError:
-                        pass
-                    raise
-                sdk_sys_kwargs: dict[str, Any] = {
-                    "system_prompt": None,
-                    "extra_args": {"system-prompt-file": sys_file_path},
-                }
-                logger.info(
-                    "[PROVIDER] System prompt delivered via file (%d chars)",
-                    len(system_blocks[0]["text"]),
-                )
-            else:
-                sdk_sys_kwargs = {"system_prompt": "---"}
-
             try:
                 async with asyncio.timeout(self.timeout):
-                    async with ClaudeSDKClient(
-                        options=ClaudeAgentOptions(
-                            tools=[],  # disable built-in tools
-                            model=self.default_model,
-                            resume=self._session.id,
-                            max_thinking_tokens=self.max_thinking_tokens,
-                            betas=self._beta_headers,
-                            **sdk_sys_kwargs,
-                        )
-                    ) as client:
-                        _client_ref = client
-                        prompt = self._convert_prompt_from_request_params(
-                            params,
-                            start_index=(
-                                self._messages_sent if self._session.id else 0
-                            ),
-                        )
-                        await client.query(prompt, session_id=self._session.id)
-                        result = await self._parse_response(client, model)
-
-                        # Track how many messages the CLI has seen so
-                        # subsequent turns only send the delta.
-                        self._messages_sent = len(params.get("messages", []))
-
-                        try:
-                            transport = client._transport
-                            await transport.end_input()
-                            if hasattr(transport, "_process") and transport._process:
-                                await asyncio.wait_for(
-                                    transport._process.wait(), timeout=5.0
-                                )
-                        except (asyncio.TimeoutError, Exception):
-                            pass
-
-                        return result
-
+                    return await client.messages.create(**params)
             except TimeoutError:
-                self._force_kill_subprocess(_client_ref)
                 raise KernelLLMTimeoutError(
                     f"Request timed out after {self.timeout}s",
                     provider="claude",
                     model=model,
                     retryable=True,
                 ) from None
-
             except asyncio.CancelledError:
-                self._force_kill_subprocess(_client_ref)
                 raise
-
             except KernelLLMError:
-                self._force_kill_subprocess(_client_ref)
                 raise
-
             except Exception as e:
-                self._force_kill_subprocess(_client_ref)
                 body = getattr(e, "body", None)
                 error_msg = json.dumps(body) if body is not None else str(e)
                 if not error_msg:
                     error_msg = f"{type(e).__name__}: (no message)"
-                raise KernelLLMError(
+                status = getattr(e, "status_code", None)
+                error_type = (
+                    KernelRateLimitError
+                    if status == 429
+                    else KernelProviderUnavailableError
+                    if status in (502, 503, 529)
+                    else KernelLLMError
+                )
+                raise error_type(
                     error_msg,
                     provider="claude",
                     model=model,
                     retryable=True,
+                    **(
+                        {"delay_multiplier": self._overloaded_delay_multiplier}
+                        if status == 529
+                        else {}
+                    ),
                 ) from e
-
-            finally:
-                # Best-effort cleanup of the system-prompt temp file. The
-                # CLI reads the file synchronously at startup, so by the
-                # time control returns here the file is no longer needed.
-                if sys_file_path:
-                    try:
-                        os.unlink(sys_file_path)
-                    except OSError:
-                        pass
 
         async def _on_retry(attempt: int, delay: float, error: KernelLLMError) -> None:
             logger.warning(
