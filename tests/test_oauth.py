@@ -14,6 +14,7 @@ import pytest
 
 from amplifier_module_provider_anthropic import AnthropicProvider
 import amplifier_anthropic_oauth.auth as auth_module
+import amplifier_anthropic_oauth.login as login_module
 from amplifier_anthropic_oauth.auth import (
     AnthropicAuth,
     AnthropicAuthError,
@@ -24,6 +25,68 @@ from amplifier_anthropic_oauth.auth import (
     refresh_oauth_credentials,
     write_credentials,
 )
+
+
+def test_browser_callback_finishes_with_partial_terminal_input(tmp_path, monkeypatch):
+    """A readable partial stdin value must not block callback completion."""
+    read_fd, write_fd = os.pipe()
+    stdin = os.fdopen(read_fd, "r")
+    os.write(write_fd, b"partial input without a newline")
+
+    monkeypatch.setattr(login_module.sys, "stdin", stdin)
+    monkeypatch.setattr(login_module.webbrowser, "open", lambda url: False)
+    monkeypatch.setattr(login_module, "generate_pkce", lambda: ("verifier", "challenge"))
+    monkeypatch.setattr(login_module, "authorization_url", lambda *_: "https://example.test")
+    monkeypatch.setattr(
+        login_module,
+        "exchange_authorization_code",
+        lambda code, state, verifier: {"access": code},
+    )
+    monkeypatch.setattr(login_module, "default_auth_path", lambda: tmp_path / "auth.json")
+    saved = {}
+    monkeypatch.setattr(
+        login_module,
+        "write_credentials",
+        lambda path, credentials: saved.update(path=path, credentials=credentials),
+    )
+
+    original_start_server = asyncio.start_server
+    servers = []
+
+    async def start_test_server(callback, host, port):
+        server = await original_start_server(callback, host, 0)
+        servers.append(server)
+        return server
+
+    monkeypatch.setattr(login_module.asyncio, "start_server", start_test_server)
+
+    async def run_login_and_callback():
+        task = asyncio.create_task(login_module.login())
+        while not servers:
+            await asyncio.sleep(0)
+        port = servers[0].sockets[0].getsockname()[1]
+        reader, writer = await asyncio.open_connection("127.0.0.1", port)
+        writer.write(
+            b"GET /callback?code=test-code&state=verifier HTTP/1.1\r\n"
+            b"Host: localhost\r\n\r\n"
+        )
+        await writer.drain()
+        await reader.read()
+        writer.close()
+        await writer.wait_closed()
+        await asyncio.wait_for(task, timeout=2)
+
+    try:
+        asyncio.run(run_login_and_callback())
+        assert os.get_blocking(read_fd) is True
+    finally:
+        stdin.close()
+        os.close(write_fd)
+
+    assert saved == {
+        "path": tmp_path / "auth.json",
+        "credentials": {"access": "test-code"},
+    }
 
 
 def test_login_module_does_not_import_amplifier_core():

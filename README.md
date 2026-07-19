@@ -5,68 +5,23 @@ This is a drop-in fork of
 It keeps the official provider implementation and adds Claude Pro/Max OAuth
 using the same direct Anthropic Messages API approach as Pi.
 
-## Installation
+## Quickstart
 
-Amplifier supports Git source overrides for runtime modules. Install Amplifier
-first if necessary:
+Copy and paste:
 
 ```bash
-# Install uv (macOS/Linux/WSL)
 curl -LsSf https://astral.sh/uv/install.sh | sh
+uv tool install --force git+https://github.com/microsoft/amplifier
 
-# Install Amplifier
-uv tool install git+https://github.com/microsoft/amplifier
-```
-
-Then override the official Anthropic module globally and run this fork's OAuth
-login as a one-off `uvx` command:
-
-```bash
 FORK=git+https://github.com/gszep/amplifier-module-provider-anthropic@main
-
 amplifier source add provider-anthropic "$FORK" --global --module
-uvx --from "$FORK" amplifier-anthropic-login
-```
-
-No module cache exists on a fresh installation; this is expected. Amplifier
-will download the fork on first provider use. If Anthropic is not configured
-yet, add it and leave the optional API-key prompt blank:
-
-```bash
+amplifier provider install anthropic --force
+uvx --refresh --from "$FORK" amplifier-anthropic-login
 amplifier provider add anthropic
-```
-
-Existing Anthropic configurations need no changes. The provider remains
-registered as `anthropic`, so existing bundles, routing, and model settings
-continue to work unchanged.
-
-Verify the installation with:
-
-```bash
-amplifier source show provider-anthropic
 amplifier provider test anthropic
 ```
 
-`uvx` is intentional: `amplifier source add` installs the runtime module into
-Amplifier's module cache, but does not expose that module's console scripts on
-your shell `PATH`. `uvx --from ...` runs the login command directly from the
-fork without permanently installing a second Python tool environment. The login
-entry point lives in the lightweight `amplifier_anthropic_oauth` package, so it
-does not import `amplifier_core` and does not require Amplifier to have been run
-or initialized first.
-
-To update a branch-based installation later:
-
-```bash
-amplifier module update provider-anthropic
-```
-
-To return to Microsoft's official provider:
-
-```bash
-amplifier source remove provider-anthropic --global
-amplifier module update provider-anthropic
-```
+Leave the API-key prompt blank after OAuth login, then run `amplifier`.
 
 OAuth credentials are stored in `~/.amplifier/anthropic-auth.json` with mode
 `0600` and refreshed automatically. Authentication precedence is
@@ -90,16 +45,17 @@ It verifies bearer auth, absence of `x-api-key`, Claude Code user-agent and
 request construction is tested separately, including its OAuth identity
 headers and error bodies.
 
-Two pytest-marked local tests are excluded from normal and CI runs. The live
-OAuth test uses the stored provider credential to list models and force a native
-tool call through the Messages API:
+The live OAuth test is excluded from normal and CI runs. It uses the stored
+provider credential to list models and force a native tool call through the
+Messages API:
 
 ```bash
 uv run pytest -m live_oauth
 ```
 
-The local header-capture test reuses the machine's installed `claude` executable
-and `~/.claude/.credentials.json`. It starts a minimal in-process CONNECT proxy,
+Normal local test runs also execute the header-capture test whenever `claude`
+and `~/.claude/.credentials.json` are available; CI runners skip it. The test
+starts a minimal in-process CONNECT proxy,
 generates a temporary CA and leaf certificate, passes that CA to Claude through
 `NODE_EXTRA_CA_CERTS`, captures one `claude -p` Messages request, immediately
 redacts its bearer token, compares stable OAuth headers, and tears everything

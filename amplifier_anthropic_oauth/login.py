@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import suppress
+import os
 import sys
 import webbrowser
 
@@ -91,15 +92,32 @@ async def login() -> None:
         print("Could not open a browser automatically; open the URL above manually.")
 
     manual: asyncio.Future[str] = loop.create_future()
+    manual_input = bytearray()
+    stdin_fd: int | None = None
+    stdin_was_blocking: bool | None = None
 
     def read_manual_input() -> None:
-        line = sys.stdin.readline()
-        if not manual.done():
-            manual.set_result(line)
+        # An asyncio fd callback must never call TextIO.readline(): terminals
+        # can report a partial/spurious readiness event, after which readline
+        # blocks the entire event loop even though the browser callback won.
+        assert stdin_fd is not None
+        try:
+            chunk = os.read(stdin_fd, 4096)
+        except BlockingIOError:
+            return
+        if chunk:
+            manual_input.extend(chunk)
+        if not chunk or b"\n" in manual_input or b"\r" in manual_input:
+            line = bytes(manual_input).splitlines()[0] if manual_input else b""
+            if not manual.done():
+                manual.set_result(line.decode(errors="replace"))
 
     has_stdin_reader = False
     try:
-        loop.add_reader(sys.stdin.fileno(), read_manual_input)
+        stdin_fd = sys.stdin.fileno()
+        stdin_was_blocking = os.get_blocking(stdin_fd)
+        os.set_blocking(stdin_fd, False)
+        loop.add_reader(stdin_fd, read_manual_input)
         has_stdin_reader = True
         print(
             "No terminal input is needed when the browser is on this machine.\n"
@@ -109,7 +127,10 @@ async def login() -> None:
             flush=True,
         )
     except (AttributeError, NotImplementedError, OSError):
-        pass
+        if stdin_fd is not None and stdin_was_blocking is not None:
+            with suppress(OSError):
+                os.set_blocking(stdin_fd, stdin_was_blocking)
+        stdin_fd = None
 
     waiters = {callback, manual} if has_stdin_reader else {callback}
     try:
@@ -140,8 +161,11 @@ async def login() -> None:
         await asyncio.to_thread(write_credentials, path, credentials)
         print(f"Anthropic OAuth credentials saved to {path}")
     finally:
-        if has_stdin_reader:
-            loop.remove_reader(sys.stdin.fileno())
+        if has_stdin_reader and stdin_fd is not None:
+            loop.remove_reader(stdin_fd)
+        if stdin_fd is not None and stdin_was_blocking is not None:
+            with suppress(OSError):
+                os.set_blocking(stdin_fd, stdin_was_blocking)
         if server:
             server.close()
             await server.wait_closed()

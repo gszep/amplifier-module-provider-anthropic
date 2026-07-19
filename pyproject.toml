@@ -39,7 +39,7 @@ allow-direct-references = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "--import-mode=importlib -m 'not live_oauth and not local_header_capture'"
+addopts = "--import-mode=importlib -m 'not live_oauth'"
 asyncio_mode = "strict"
 markers = [
     "live_oauth: opt-in tests that call Anthropic with stored OAuth credentials",
