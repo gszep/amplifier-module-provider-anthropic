@@ -2,16 +2,21 @@
 
 import asyncio
 import json
+from io import BytesIO
 import os
 import subprocess
 import sys
+from urllib.error import HTTPError
 
 from amplifier_core.message_models import ToolSpec
 from anthropic.types import Message as AnthropicMessage
+import pytest
 
 from amplifier_module_provider_anthropic import AnthropicProvider
+import amplifier_anthropic_oauth.auth as auth_module
 from amplifier_anthropic_oauth.auth import (
     AnthropicAuth,
+    AnthropicAuthError,
     AnthropicAuthManager,
     OAUTH_BETAS,
     oauth_request_headers,
@@ -32,6 +37,50 @@ builtins.__import__ = guarded_import
 import amplifier_anthropic_oauth.login
 """
     subprocess.run([sys.executable, "-c", code], check=True)
+
+
+def test_token_exchange_uses_claude_identity_headers(monkeypatch):
+    captured = {}
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return b'{"ok": true}'
+
+    def fake_urlopen(request, timeout):
+        captured["request"] = request
+        captured["timeout"] = timeout
+        return Response()
+
+    monkeypatch.setenv("AMPLIFIER_CLAUDE_CODE_VERSION", "9.8.7")
+    monkeypatch.setattr(auth_module, "urlopen", fake_urlopen)
+    assert auth_module._post_json("https://example.test/token", {"code": "x"}) == {
+        "ok": True
+    }
+    headers = dict(captured["request"].header_items())
+    assert headers["User-agent"] == "claude-cli/9.8.7 (external, cli)"
+    assert headers["Anthropic-beta"] == "oauth-2025-04-20"
+    assert headers["X-app"] == "cli"
+
+
+def test_token_exchange_error_includes_response_body(monkeypatch):
+    def fake_urlopen(request, timeout):
+        raise HTTPError(
+            request.full_url,
+            403,
+            "Forbidden",
+            {},
+            BytesIO(b'{"error":"invalid_request"}'),
+        )
+
+    monkeypatch.setattr(auth_module, "urlopen", fake_urlopen)
+    with pytest.raises(AnthropicAuthError, match="invalid_request"):
+        auth_module._post_json("https://example.test/token", {"code": "x"})
 
 
 def test_oauth_headers_have_claude_code_identity(monkeypatch):

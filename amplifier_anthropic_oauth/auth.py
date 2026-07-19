@@ -13,13 +13,14 @@ import subprocess
 import time
 from typing import Any
 from urllib.parse import parse_qs, urlencode, urlparse
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 
 CLIENT_ID = base64.b64decode(
     "OWQxYzI1MGEtZTYxYi00NGQ5LTg4ZWQtNTk0NGQxOTYyZjVl"
 ).decode()
-AUTHORIZE_URL = "https://claude.ai/oauth/authorize"
+AUTHORIZE_URL = "https://claude.com/cai/oauth/authorize"
 TOKEN_URL = "https://platform.claude.com/v1/oauth/token"
 CALLBACK_HOST = "127.0.0.1"
 CALLBACK_PORT = 53692
@@ -145,15 +146,27 @@ def parse_authorization_input(value: str) -> tuple[str | None, str | None]:
 
 
 def _post_json(url: str, body: dict[str, Any]) -> dict[str, Any]:
+    identity_headers = oauth_request_headers()
     request = Request(
         url,
         data=json.dumps(body).encode(),
-        headers={"Content-Type": "application/json", "Accept": "application/json"},
+        headers={
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "User-Agent": identity_headers["user-agent"],
+            "anthropic-beta": "oauth-2025-04-20",
+            "x-app": identity_headers["x-app"],
+        },
         method="POST",
     )
     try:
         with urlopen(request, timeout=30) as response:  # noqa: S310 - fixed HTTPS endpoint
             payload = response.read().decode()
+    except HTTPError as exc:
+        response_body = exc.read().decode(errors="replace")
+        raise AnthropicAuthError(
+            f"Anthropic OAuth request failed: HTTP {exc.code}: {response_body}"
+        ) from exc
     except Exception as exc:
         raise AnthropicAuthError(f"Anthropic OAuth request failed: {exc}") from exc
     try:
@@ -209,6 +222,7 @@ def refresh_oauth_credentials(credentials: dict[str, Any]) -> dict[str, Any]:
                 "grant_type": "refresh_token",
                 "client_id": CLIENT_ID,
                 "refresh_token": refresh,
+                "scope": SCOPES,
             },
         )
     )

@@ -14,7 +14,10 @@ import subprocess
 import pytest
 
 from amplifier_anthropic_oauth.auth import (
+    AUTHORIZE_URL,
+    CLIENT_ID,
     OAUTH_BETAS,
+    TOKEN_URL,
     installed_claude_code_version,
     oauth_request_headers,
 )
@@ -43,6 +46,9 @@ def test_installed_claude_code_oauth_header_contract():
     assert b"claude-cli/" in binary
     assert b"(external, " in binary
     assert b"x-app" in binary
+    assert AUTHORIZE_URL.encode() in binary
+    assert TOKEN_URL.encode() in binary
+    assert CLIENT_ID.encode() in binary
 
     for beta in OAUTH_BETAS:
         assert beta.encode() in binary, (
