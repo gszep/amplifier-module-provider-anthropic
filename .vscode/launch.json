@@ -1,0 +1,43 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Debug Amplifer Interactive",
+            "type": "debugpy",
+            "request": "launch",
+            // This ensures VS Code runs the currently open shim file
+            "program": "/home/gszep/.local/bin/amplifier",
+            // CRITICAL: Points to the specific uv environment
+            "python": "/home/gszep/.local/share/uv/tools/amplifier/bin/python",
+            // CRITICAL: Must be false to step into the installed package code
+            "justMyCode": false,
+            // Add any arguments the CLI needs here
+            "args": [
+                "run",
+                "--provider",
+                "claude",
+                "--model",
+                "opus",
+                "--mode",
+                "chat",
+            ],
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "Debug Resume Amplifer Session",
+            "type": "debugpy",
+            "request": "launch",
+            // This ensures VS Code runs the currently open shim file
+            "program": "/home/gszep/.local/bin/amplifier",
+            // CRITICAL: Points to the specific uv environment
+            "python": "/home/gszep/.local/share/uv/tools/amplifier/bin/python",
+            // CRITICAL: Must be false to step into the installed package code
+            "justMyCode": false,
+            // Add any arguments the CLI needs here
+            "args": [
+                "resume",
+            ],
+            "console": "integratedTerminal"
+        }
+    ]
+}
