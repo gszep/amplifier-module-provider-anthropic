@@ -20,7 +20,6 @@ from amplifier_module_provider_anthropic.auth import (
 )
 
 
-@pytest.mark.long
 def test_installed_claude_code_oauth_header_contract():
     executable = shutil.which("claude")
     if not executable:

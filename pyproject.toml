@@ -1,15 +1,15 @@
 [project]
 name = "amplifier-module-provider-anthropic"
 version = "1.0.0"
-description = "Anthropic provider for Amplifier with Claude Pro/Max OAuth"
+description = "Reference provider module - Anthropic Claude integration for Amplifier"
 license = "MIT"
 readme = "README.md"
 requires-python = ">=3.11"
 authors = [
-    { name = "Grisha Szep" },
+    { name = "Microsoft MADE:Explorations Team" },
 ]
 dependencies = [
-    "anthropic>=0.96.0,<0.97",
+    "anthropic>=0.96.0",
 ]
 
 [project.scripts]
@@ -28,7 +28,6 @@ build-backend = "hatchling.build"
 [tool.uv]
 package = true
 
-
 [tool.hatch.build.targets.wheel]
 packages = [
     "amplifier_module_provider_anthropic",
@@ -39,18 +38,12 @@ allow-direct-references = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = [
-    "--import-mode=importlib",
-    "-m not long",
-]
+addopts = "--import-mode=importlib"
 asyncio_mode = "strict"
-markers = [
-    "long: marks tests as long-running",
-]
 
 [dependency-groups]
 dev = [
-    "amplifier-core>=1.6.0",
-    "pytest>=9.0.2",
+    "pytest>=9.0.3",
     "pytest-asyncio>=1.3.0",
 ]
+

@@ -9,7 +9,7 @@ Install this branch in place of the official provider:
 
 ```bash
 amplifier module add provider-anthropic \
-  --source git+https://github.com/gszep/amplifier-module-provider-claude@main
+  --source git+https://github.com/gszep/amplifier-module-provider-anthropic@main
 amplifier-anthropic-login
 ```
 

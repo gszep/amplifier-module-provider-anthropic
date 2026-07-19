@@ -1,6 +1,3 @@
-.*
-!.gitignore
-
 # Private settings
 **/certs/*.pem
 **/certs/config.json

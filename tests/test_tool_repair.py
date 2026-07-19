@@ -34,12 +34,6 @@ class MockStreamManager:
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         return False
 
-    def __aiter__(self):
-        return self
-
-    async def __anext__(self):
-        raise StopAsyncIteration
-
     async def get_final_message(self):
         return self._api_response
 

@@ -9,11 +9,3 @@ The amplifier-core pytest plugin provides fixtures automatically:
 - module_type: Detected type (provider, tool, hook, etc.)
 - provider_module, tool_module, etc.: Mounted module instances
 """
-
-import pytest
-
-
-@pytest.fixture(autouse=True)
-def _test_api_key(monkeypatch, request):
-    if request.node.get_closest_marker("long") is None:
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "test-anthropic-api-key")
