@@ -1,4 +1,34 @@
-# Amplifier Anthropic Provider Module
+# Amplifier Anthropic Provider Module — Claude Pro/Max OAuth Fork
+
+This is a drop-in fork of
+[`microsoft/amplifier-module-provider-anthropic`](https://github.com/microsoft/amplifier-module-provider-anthropic).
+It keeps the official provider implementation and adds Claude Pro/Max OAuth
+using the same direct Anthropic Messages API approach as Pi.
+
+Install this branch in place of the official provider:
+
+```bash
+amplifier module add provider-anthropic \
+  --source git+https://github.com/gszep/amplifier-module-provider-anthropic@main
+amplifier-anthropic-login
+```
+
+The provider remains registered as `anthropic`, so existing bundles and routing
+configuration continue to work unchanged. `amplifier-claude-login` is retained
+as an alias.
+
+OAuth credentials are stored in `~/.amplifier/anthropic-auth.json` with mode
+`0600` and refreshed automatically. Authentication precedence is
+`ANTHROPIC_OAUTH_TOKEN`, stored OAuth, configured `api_key`, then
+`ANTHROPIC_API_KEY`.
+
+OAuth requests use bearer authentication, Claude Code identity headers and
+system identity, and canonical Claude Code casing for matching built-in tool
+names. Tools otherwise follow the official provider's native `tools`,
+`tool_use`, and `tool_result` path; nothing is serialized into model-visible
+text. The request contract is centralized in
+`amplifier_module_provider_anthropic/auth.py` and checked against an installed
+Claude Code executable by `tests/test_claude_header_parity.py`.
 
 Claude model integration for Amplifier via Anthropic API.
 

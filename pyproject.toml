@@ -12,6 +12,10 @@ dependencies = [
     "anthropic>=0.96.0",
 ]
 
+[project.scripts]
+amplifier-anthropic-login = "amplifier_module_provider_anthropic.login:main"
+amplifier-claude-login = "amplifier_module_provider_anthropic.login:main"
+
 [project.entry-points."amplifier.modules"]
 provider-anthropic = "amplifier_module_provider_anthropic:mount"
 
