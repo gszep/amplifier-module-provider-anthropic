@@ -1,10 +1,16 @@
-"""Test image support in Claude provider."""
+"""Test image support in Anthropic provider.
+
+Tests ImageBlock handling for vision capabilities (image understanding).
+"""
 
 import base64
 from pathlib import Path
 
 import pytest
-from amplifier_core.message_models import ChatRequest, ImageBlock, Message, TextBlock
+from amplifier_core.message_models import ChatRequest
+from amplifier_core.message_models import ImageBlock
+from amplifier_core.message_models import Message
+from amplifier_core.message_models import TextBlock
 
 from amplifier_module_provider_anthropic import AnthropicProvider
 
@@ -19,13 +25,19 @@ def test_image_base64():
 
 
 @pytest.fixture
-def claude_provider():
+def anthropic_provider():
     """Create an AnthropicProvider instance for testing."""
-    return AnthropicProvider()
+    # Use test API key - provider will work without real key for _convert_messages
+    return AnthropicProvider(api_key="test_key_for_unit_tests")
 
 
-def test_image_block_conversion_to_anthropic_format(claude_provider, test_image_base64):
-    """ImageBlock with base64 source converts to Anthropic image format."""
+def test_image_block_conversion_to_anthropic_format(anthropic_provider, test_image_base64):
+    """Test that ImageBlock in ChatRequest converts to Anthropic image format.
+
+    This test verifies the core conversion logic:
+    - ImageBlock with base64 source → Anthropic content array with image type
+    - Text + Image in same message → multiple content blocks in correct order
+    """
     # Create ChatRequest with text + image
     request = ChatRequest(
         messages=[
@@ -46,7 +58,7 @@ def test_image_block_conversion_to_anthropic_format(claude_provider, test_image_
     )
 
     # Convert to Anthropic format
-    anthropic_messages = claude_provider._convert_messages(
+    anthropic_messages = anthropic_provider._convert_messages(
         [request.messages[0].model_dump()]
     )
 
@@ -68,7 +80,7 @@ def test_image_block_conversion_to_anthropic_format(claude_provider, test_image_
     assert content[1]["source"]["data"] == test_image_base64
 
 
-def test_image_block_with_png(claude_provider):
+def test_image_block_with_png(anthropic_provider):
     """Test ImageBlock with PNG mime type."""
     fake_png_data = base64.b64encode(b"fake_png_bytes").decode("utf-8")
 
@@ -90,7 +102,7 @@ def test_image_block_with_png(claude_provider):
         ]
     )
 
-    anthropic_messages = claude_provider._convert_messages(
+    anthropic_messages = anthropic_provider._convert_messages(
         [request.messages[0].model_dump()]
     )
 
@@ -106,7 +118,7 @@ def test_image_block_with_png(claude_provider):
     assert content[1] == {"type": "text", "text": "Describe this image"}
 
 
-def test_multiple_images_in_message(claude_provider):
+def test_multiple_images_in_message(anthropic_provider):
     """Test handling multiple ImageBlocks in a single message."""
     fake_data_1 = base64.b64encode(b"image1").decode("utf-8")
     fake_data_2 = base64.b64encode(b"image2").decode("utf-8")
@@ -136,7 +148,7 @@ def test_multiple_images_in_message(claude_provider):
         ]
     )
 
-    anthropic_messages = claude_provider._convert_messages(
+    anthropic_messages = anthropic_provider._convert_messages(
         [request.messages[0].model_dump()]
     )
 
@@ -150,7 +162,7 @@ def test_multiple_images_in_message(claude_provider):
     assert content[2]["source"]["data"] == fake_data_2
 
 
-def test_text_only_message_still_works(claude_provider):
+def test_text_only_message_still_works(anthropic_provider):
     """Ensure text-only messages still work after ImageBlock support added."""
     request = ChatRequest(
         messages=[
@@ -161,7 +173,7 @@ def test_text_only_message_still_works(claude_provider):
         ]
     )
 
-    anthropic_messages = claude_provider._convert_messages(
+    anthropic_messages = anthropic_provider._convert_messages(
         [request.messages[0].model_dump()]
     )
 
@@ -171,13 +183,27 @@ def test_text_only_message_still_works(claude_provider):
     assert content[0] == {"type": "text", "text": "Hello, how are you?"}
 
 
-@pytest.mark.skip(reason="Not Implemented")
+@pytest.mark.long
 @pytest.mark.asyncio
-async def test_image_vision_integration(test_image_base64):
-    """Integration test: Verify ImageBlock works."""
+async def test_image_vision_integration_with_real_api(test_image_base64):
+    """Integration test: Verify ImageBlock works with real Anthropic API.
 
-    # Create provider
-    provider = AnthropicProvider()
+    This test validates end-to-end image understanding:
+    - ImageBlock → Anthropic API format conversion
+    - Real API call with vision
+    - Response parsing
+
+    Requires ANTHROPIC_API_KEY environment variable.
+    Skip if not available (unit tests still validate conversion logic).
+    """
+    import os
+
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        pytest.skip("ANTHROPIC_API_KEY not set - skipping integration test")
+
+    # Create provider with real API key
+    provider = AnthropicProvider(api_key=api_key)
 
     # Create request with image of Macbeth stage production
     request = ChatRequest(
@@ -198,6 +224,7 @@ async def test_image_vision_integration(test_image_base64):
         ]
     )
 
+    # Call the real API
     response = await provider.complete(request)
 
     # Verify response structure
@@ -216,20 +243,15 @@ async def test_image_vision_integration(test_image_base64):
     response_lower = response_text.lower()
 
     # Should mention it's a stage production/theatrical scene
-    assert any(
-        keyword in response_lower
-        for keyword in ["stage", "theater", "theatre", "production", "performance"]
-    ), f"Expected stage/theater reference in response: {response_text[:200]}"
+    assert any(keyword in response_lower for keyword in ["stage", "theater", "theatre", "production", "performance"]), \
+        f"Expected stage/theater reference in response: {response_text[:200]}"
 
     # Should recognize the witches/women
-    assert any(
-        keyword in response_lower
-        for keyword in ["witch", "women", "woman", "people", "person", "figure"]
-    ), f"Expected people/witches reference in response: {response_text[:200]}"
+    assert any(keyword in response_lower for keyword in ["witch", "women", "woman", "people", "person", "figure"]), \
+        f"Expected people/witches reference in response: {response_text[:200]}"
 
     # Should mention Macbeth or the text visible in the image
-    assert any(
-        keyword in response_lower for keyword in ["macbeth", "text", "act", "scene"]
-    ), f"Expected Macbeth/text reference in response: {response_text[:200]}"
+    assert any(keyword in response_lower for keyword in ["macbeth", "text", "act", "scene"]), \
+        f"Expected Macbeth/text reference in response: {response_text[:200]}"
 
     print(f"\n✅ Vision test passed! Model response:\n{response_text[:500]}...")

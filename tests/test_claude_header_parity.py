@@ -45,10 +45,8 @@ def test_installed_claude_code_oauth_header_contract():
     assert b"(external, " in binary
     assert b"x-app" in binary
 
-    # The OAuth beta is the authentication protocol contract. Tool-streaming
-    # betas are provider capabilities and need not all be embedded by the CLI.
-    oauth_beta = next(beta for beta in OAUTH_BETAS if beta.startswith("oauth-"))
-    assert oauth_beta.encode() in binary, (
-        f"Installed Claude Code no longer contains {oauth_beta}; inspect its "
-        "OAuth request contract before updating OAUTH_BETAS"
-    )
+    for beta in OAUTH_BETAS:
+        assert beta.encode() in binary, (
+            f"Installed Claude Code no longer contains {beta}; inspect its "
+            "request contract before updating OAUTH_BETAS"
+        )

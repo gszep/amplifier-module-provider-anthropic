@@ -720,13 +720,26 @@ class AnthropicProvider:
             # Set SDK max_retries=0 - we handle retries ourselves to properly
             # honor retry-after headers with jitter and longer backoffs
             auth = self._auth_state
-            self._client = AsyncAnthropic(
-                api_key=None if auth and auth.oauth else self._api_key,
-                auth_token=auth.token if auth and auth.oauth else None,
-                base_url=self._base_url,
-                default_headers=self._default_headers,
-                max_retries=0,
-            )
+            if auth and auth.oauth:
+                # Passing api_key=None makes the SDK silently reload
+                # ANTHROPIC_API_KEY from the environment. Use an explicit empty
+                # value during construction, then clear it so OAuth requests
+                # carry Authorization only and never an X-Api-Key header.
+                self._client = AsyncAnthropic(
+                    api_key="",
+                    auth_token=auth.token,
+                    base_url=self._base_url,
+                    default_headers=self._default_headers,
+                    max_retries=0,
+                )
+                self._client.api_key = None
+            else:
+                self._client = AsyncAnthropic(
+                    api_key=self._api_key,
+                    base_url=self._base_url,
+                    default_headers=self._default_headers,
+                    max_retries=0,
+                )
         return self._client
 
     async def _refresh_auth(self) -> None:

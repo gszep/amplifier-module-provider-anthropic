@@ -57,6 +57,18 @@ def test_auth_manager_prefers_oauth_over_api_key(tmp_path, monkeypatch):
     assert auth == AnthropicAuth("sk-ant-oat-access", oauth=True)
 
 
+def test_oauth_client_uses_bearer_auth_and_identity_headers():
+    provider = AnthropicProvider(
+        "sk-ant-oat-test",
+        initial_auth=AnthropicAuth("sk-ant-oat-test", oauth=True),
+    )
+    client = provider.client
+    assert client.api_key is None
+    assert client.auth_token == "sk-ant-oat-test"
+    assert client.default_headers["x-app"] == "cli"
+    assert "oauth-2025-04-20" in client.default_headers["anthropic-beta"]
+
+
 def test_native_tools_are_sent_structurally():
     provider = AnthropicProvider(
         "sk-ant-oat-test",

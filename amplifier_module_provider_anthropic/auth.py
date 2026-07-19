@@ -86,8 +86,14 @@ class AnthropicAuthError(RuntimeError):
 
 
 def default_auth_path() -> Path:
-    configured = os.environ.get("AMPLIFIER_CLAUDE_AUTH_FILE")
-    return Path(configured).expanduser() if configured else Path.home() / ".amplifier" / "claude-auth.json"
+    configured = os.environ.get("AMPLIFIER_ANTHROPIC_AUTH_FILE") or os.environ.get(
+        "AMPLIFIER_CLAUDE_AUTH_FILE"
+    )
+    return (
+        Path(configured).expanduser()
+        if configured
+        else Path.home() / ".amplifier" / "anthropic-auth.json"
+    )
 
 
 def _b64url(value: bytes) -> str:
@@ -268,6 +274,6 @@ class AnthropicAuthManager:
                 return AnthropicAuth(key, oauth=False)
 
         raise AnthropicAuthError(
-            "No Anthropic credentials. Run `amplifier-claude-login`, set "
+            "No Anthropic credentials. Run `amplifier-anthropic-login`, set "
             "ANTHROPIC_OAUTH_TOKEN`, or set `ANTHROPIC_API_KEY`."
         )
