@@ -3,12 +3,14 @@
 import asyncio
 import json
 import os
+import subprocess
+import sys
 
 from amplifier_core.message_models import ToolSpec
 from anthropic.types import Message as AnthropicMessage
 
 from amplifier_module_provider_anthropic import AnthropicProvider
-from amplifier_module_provider_anthropic.auth import (
+from amplifier_anthropic_oauth.auth import (
     AnthropicAuth,
     AnthropicAuthManager,
     OAUTH_BETAS,
@@ -16,6 +18,20 @@ from amplifier_module_provider_anthropic.auth import (
     read_credentials,
     write_credentials,
 )
+
+
+def test_login_module_does_not_import_amplifier_core():
+    code = """
+import builtins
+original_import = builtins.__import__
+def guarded_import(name, *args, **kwargs):
+    if name == 'amplifier_core' or name.startswith('amplifier_core.'):
+        raise AssertionError('standalone login imported amplifier_core')
+    return original_import(name, *args, **kwargs)
+builtins.__import__ = guarded_import
+import amplifier_anthropic_oauth.login
+"""
+    subprocess.run([sys.executable, "-c", code], check=True)
 
 
 def test_oauth_headers_have_claude_code_identity(monkeypatch):

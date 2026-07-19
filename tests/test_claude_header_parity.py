@@ -13,7 +13,7 @@ import subprocess
 
 import pytest
 
-from amplifier_module_provider_anthropic.auth import (
+from amplifier_anthropic_oauth.auth import (
     OAUTH_BETAS,
     installed_claude_code_version,
     oauth_request_headers,

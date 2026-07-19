@@ -13,8 +13,8 @@ dependencies = [
 ]
 
 [project.scripts]
-amplifier-anthropic-login = "amplifier_module_provider_anthropic.login:main"
-amplifier-claude-login = "amplifier_module_provider_anthropic.login:main"
+amplifier-anthropic-login = "amplifier_anthropic_oauth.login:main"
+amplifier-claude-login = "amplifier_anthropic_oauth.login:main"
 
 [project.entry-points."amplifier.modules"]
 provider-anthropic = "amplifier_module_provider_anthropic:mount"
@@ -31,6 +31,7 @@ package = true
 [tool.hatch.build.targets.wheel]
 packages = [
     "amplifier_module_provider_anthropic",
+    "amplifier_anthropic_oauth",
 ]
 
 [tool.hatch.metadata]
