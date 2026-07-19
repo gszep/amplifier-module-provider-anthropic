@@ -133,6 +133,28 @@ def test_api_key_config_is_optional_for_oauth_users():
     assert api_key_field.required is False
 
 
+def test_direct_provider_instance_discovers_stored_oauth(tmp_path):
+    path = tmp_path / "auth.json"
+    write_credentials(
+        path,
+        {
+            "type": "oauth",
+            "access": "sk-ant-oat-discovered",
+            "refresh": "refresh",
+            "expires": 9999999999999,
+        },
+    )
+    provider = AnthropicProvider(config={"auth_file": str(path)})
+    asyncio.run(provider._refresh_auth())
+    assert provider._auth_state == AnthropicAuth(
+        "sk-ant-oat-discovered", oauth=True
+    )
+    assert provider._default_headers["x-app"] == "cli"
+    assert "oauth-2025-04-20" in provider._default_headers["anthropic-beta"]
+    assert provider.client.api_key is None
+    assert provider.client.auth_token == "sk-ant-oat-discovered"
+
+
 def test_oauth_client_uses_bearer_auth_and_identity_headers():
     provider = AnthropicProvider(
         "sk-ant-oat-test",

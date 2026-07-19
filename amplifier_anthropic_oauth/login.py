@@ -86,7 +86,9 @@ async def login() -> None:
     print("Open this URL to authenticate with Anthropic:\n")
     print(url)
     print(f"\nWaiting for the callback at {REDIRECT_URI}.")
-    webbrowser.open(url)
+    opened = webbrowser.open(url)
+    if not opened:
+        print("Could not open a browser automatically; open the URL above manually.")
 
     manual: asyncio.Future[str] = loop.create_future()
 
@@ -100,20 +102,29 @@ async def login() -> None:
         loop.add_reader(sys.stdin.fileno(), read_manual_input)
         has_stdin_reader = True
         print(
-            "If the browser is on another machine, paste the final redirect URL "
-            "or authorization code here, then press Enter:\n> ",
+            "No terminal input is needed when the browser is on this machine.\n"
+            "If the browser is elsewhere, paste the final redirect URL or "
+            "authorization code here, then press Enter:\n> ",
             end="",
             flush=True,
         )
     except (AttributeError, NotImplementedError, OSError):
         pass
 
-    callback_task = asyncio.ensure_future(callback)
-    waiters = {callback_task, manual} if has_stdin_reader else {callback_task}
+    waiters = {callback, manual} if has_stdin_reader else {callback}
     try:
-        done, _ = await asyncio.wait(waiters, return_when=asyncio.FIRST_COMPLETED)
-        if callback_task in done:
-            code, state = callback_task.result()
+        try:
+            async with asyncio.timeout(5 * 60):
+                done, _ = await asyncio.wait(
+                    waiters, return_when=asyncio.FIRST_COMPLETED
+                )
+        except TimeoutError as exc:
+            raise AnthropicAuthError(
+                "Timed out waiting for the OAuth callback"
+            ) from exc
+        if callback in done:
+            code, state = callback.result()
+            print("\nOAuth callback received; exchanging authorization code...")
         else:
             code, supplied_state = parse_authorization_input(manual.result())
             state = supplied_state or verifier
@@ -134,7 +145,7 @@ async def login() -> None:
         if server:
             server.close()
             await server.wait_closed()
-        for task in (manual, callback_task):
+        for task in (manual, callback):
             if not task.done():
                 task.cancel()
 

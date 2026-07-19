@@ -527,12 +527,20 @@ class AnthropicProvider:
             coordinator: Module coordinator for event emission
         """
         self._api_key = api_key
-        self._auth_manager = auth_manager
+        self.config = config or {}
+        auth_path = self.config.get("auth_file")
+        self._auth_manager = auth_manager or (
+            AnthropicAuthManager(
+                path=Path(auth_path).expanduser() if auth_path else None,
+                api_key=None,
+            )
+            if api_key is None
+            else None
+        )
         self._auth_state = initial_auth or (
             AnthropicAuth(api_key, oauth=False) if api_key else None
         )
         self._client: AsyncAnthropic | None = None  # Lazy init
-        self.config = config or {}
         self.coordinator = coordinator
         self.default_model = self.config.get("default_model", "claude-sonnet-4-5")
         self._default_caps = self._get_capabilities(self.default_model)
@@ -753,6 +761,14 @@ class AnthropicProvider:
         self._client = None
         self._auth_state = auth
         self._api_key = auth.token
+        if auth.oauth:
+            self._beta_headers = list(
+                dict.fromkeys([*OAUTH_BETAS, *self._beta_headers])
+            )
+            self._default_headers = {
+                **oauth_request_headers(),
+                "anthropic-beta": ",".join(self._beta_headers),
+            }
         if old_client is not None:
             await old_client.close()
 
